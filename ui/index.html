@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="xuan">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>笺</title>
+<link rel="stylesheet" href="fonts/wenkai/wenkai.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="frame" id="frame">
+  <header id="topbar" data-drag>
+    <span class="seal-logo" title="笺">笺</span>
+    <div class="title-block">
+      <div class="month" id="monthLabel"></div>
+      <div class="sub" id="weekLabel"></div>
+    </div>
+    <nav class="week-nav">
+      <button class="ib" id="prevWeek" title="上一周 (←)"></button>
+      <button class="pill" id="todayBtn" title="回到今天 (T)">今天</button>
+      <button class="ib" id="nextWeek" title="下一周 (→)"></button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="week-stat" id="weekStat"></div>
+    <div class="win-btns">
+      <button class="ib" id="settingsBtn" title="设置"></button>
+      <span class="sep"></span>
+      <button class="ib" id="pinBtn" title="置顶 (P)"></button>
+      <button class="ib" id="miniBtn" title="迷你卡片 (M)"></button>
+      <button class="ib" id="minBtn" title="最小化"></button>
+      <button class="ib close" id="closeBtn" title="隐藏到后台 (Esc)"></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="week">
+      <div class="days-head" id="daysHead"><div></div></div>
+      <div class="scroller" id="scroller">
+        <div class="grid-body" id="gridBody">
+          <div class="gutter" id="gutter"></div>
+          <div class="cols" id="cols"></div>
+          <div class="now" id="nowLine" hidden><span class="lbl" id="nowLbl"></span><div class="seg"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="spine"></div>
+
+    <aside id="todo">
+      <div class="todo-head" id="todoHead">
+        <button class="ib" id="prevDay" title="前一天"></button>
+        <div class="todo-date" id="todoDate"></div>
+        <button class="ib" id="nextDay" title="后一天"></button>
+        <div class="mini-btns">
+          <button class="ib" id="pinBtn2" title="置顶 (P)"></button>
+          <button class="ib" id="expandBtn" title="展开周视图 (M)"></button>
+          <button class="ib close" id="closeBtn2" title="隐藏到后台 (Esc)"></button>
+        </div>
+        <div class="seal-done" id="sealDone">毕</div>
+      </div>
+      <div class="progress" id="progress"><div class="bar"><i></i></div><span></span></div>
+      <div class="nownext" id="nownext"></div>
+      <div class="tabs" id="tabs">
+        <button data-tab="todo" class="on">待办</button>
+        <button data-tab="memo">随记</button>
+        <i class="ind"></i>
+      </div>
+      <div class="panes">
+        <div class="pane todo-body" id="todoBody"></div>
+        <div class="pane off" id="memoPane"><textarea class="memo" id="memo" placeholder="随手记点什么……灵感、电话、待买的东西" spellcheck="false"></textarea></div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div id="layer"></div>
+<div class="toasts" id="toasts"></div>
+<div class="edge n"></div><div class="edge s"></div><div class="edge w"></div><div class="edge e"></div>
+<div class="edge nw"></div><div class="edge ne"></div><div class="edge sw"></div><div class="edge se"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
