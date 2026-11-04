@@ -28,8 +28,31 @@ const shift = (s, n) => ymd(addDays(parse(s), n));
 const mondayOf = d => addDays(d, -((d.getDay() + 6) % 7));
 const diffDays = (a, b) => Math.round((parse(b) - parse(a)) / 864e5);
 const hm = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
-const nowMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
-const today = () => ymd(new Date());
+// 现在几点：默认跟随系统，也可以在设置里指定时区（日程记的是“几点几分”，跟着所选时区的钟走）
+const SYS_TZ = (() => { try { return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
+const zfmts = new Map();
+function zfmt(tz) {   // 每个时区缓存一个格式器：创建它比使用它贵得多
+  let f = zfmts.get(tz);
+  if (!f) zfmts.set(tz, f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' }));
+  return f;
+}
+const validTz = tz => { try { return typeof tz === 'string' && !!zfmt(tz); } catch { return false; } };
+const realTz = id => id === 'system' ? SYS_TZ : id;
+function wallIn(tz, t) {   // 某时区在 t 时刻的钟面：{ ds: 'YYYY-MM-DD', min: 当天第几分钟 }
+  const p = {};
+  for (const x of zfmt(tz).formatToParts(t)) p[x.type] = x.value;
+  return { ds: `${p.year}-${pad(p.month)}-${pad(p.day)}`, min: (+p.hour % 24) * 60 + +p.minute };
+}
+let clk = {};
+function clock() {   // 现在（按设置的时区）；同一秒内复用结果，渲染时可以放心多次调用
+  const t = Date.now(), sec = Math.floor(t / 1000), tz = data.settings.tz;
+  if (clk.sec === sec && clk.tz === tz) return clk;
+  const n = new Date(t);
+  return (clk = { sec, tz, ...(tz === 'system' ? { ds: ymd(n), min: n.getHours() * 60 + n.getMinutes() } : wallIn(tz, t)) });
+}
+const nowMin = () => clock().min;
+const today = () => clock().ds;
+const thisMonday = () => mondayOf(parse(today()));
 const md = s => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const WD = '日一二三四五六';
 const CNM = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
@@ -72,8 +95,9 @@ const HILLS = '<svg viewBox="0 0 64 44"><path d="M7 33c5-1 9-5 13-10 3-4 6-9 10-
 const COLORS = [['dai', '黛'], ['zhu', '朱'], ['tai', '苔'], ['zhe', '赭'], ['zi', '紫'], ['qing', '青'], ['mo', '墨']];
 const REPEATS = [['none', '不重复'], ['daily', '每天'], ['workdays', '工作日'], ['weekly', '每周']];
 const THEMES = [['xuan', '宣纸', '#f5efe3'], ['kraft', '牛皮', '#e6d4b4'], ['moon', '月白', '#f1f2ee'], ['ink', '夜墨', '#2a2723']];
-const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan' };
+const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system' };
 const BOOT = window.__BOOT__ || {};
+const tzOK = BOOT.zones !== false;   // 原生层（Python）能不能按时区提醒；不能就只跟随系统
 
 function normalize(d) {
   d = d && typeof d === 'object' ? d : {};
@@ -86,13 +110,15 @@ function normalize(d) {
   const tasks = (Array.isArray(d.tasks) ? d.tasks : [])
     .filter(t => t && t.id && typeof t.text === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.date))
     .map(t => ({ eventId: null, done: false, order: 0, ...t }));
-  return { version: 1, settings: { ...DEF, ...(d.settings || {}) }, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', colorIdx: d.colorIdx | 0 };
+  const settings = { ...DEF, ...(d.settings || {}) };
+  if (settings.tz !== 'system' && !(tzOK && validTz(settings.tz))) settings.tz = 'system';
+  return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', colorIdx: d.colorIdx | 0 };
 }
 function loadLocal() { try { return JSON.parse(localStorage.getItem('jian-data')); } catch { return null; } }
 let data = normalize(BOOT.data || (native ? null : loadLocal()));
 
 const ui = {
-  week: mondayOf(new Date()),
+  week: thisMonday(),
   sel: today(),
   day: today(),
   hourH: 44,
@@ -115,7 +141,9 @@ function undo() {
   closePop();
   const s = undoStack.pop();
   if (!s) return toast('没有可以撤销的操作了');
-  data = normalize(JSON.parse(s)); save(); applyTheme(); renderAll(); toast('已撤销');
+  // 设置（纸色、时区……）和随记不走撤销：保留当前的，免得撤销一次日程把它们也带回旧版本
+  const keep = { settings: data.settings, memo: data.memo };
+  data = normalize(JSON.parse(s)); Object.assign(data, keep); save(); renderAll(); toast('已撤销');
 }
 
 // ───────────────────────── 日程展开 ─────────────────────────
@@ -187,7 +215,7 @@ function renderHeader() {
   const a = ui.week, b = addDays(a, 6);
   $('#monthLabel').textContent = a.getMonth() === b.getMonth() ? CNM[a.getMonth()] : `${CNM[a.getMonth()]} – ${CNM[b.getMonth()]}`;
   $('#weekLabel').textContent = `${b.getFullYear()} · 第 ${isoWeek(a)} 周`;
-  $('#todayBtn').classList.toggle('here', ymd(a) === ymd(mondayOf(new Date())) && ui.sel === today());
+  $('#todayBtn').classList.toggle('here', ymd(a) === ymd(thisMonday()) && ui.sel === today());
   let tot = 0, dn = 0; const s = ymd(a), e = ymd(b);
   for (const t of data.tasks) if (t.date >= s && t.date <= e) { tot++; if (t.done) dn++; }
   const ws = $('#weekStat');
@@ -230,6 +258,15 @@ function renderDays() {
     h.title = `${d.getMonth() + 1}月${d.getDate()}日 · 点击查看当天待办`;
     for (const [k, v] of [['today', ds === td], ['sel', ds === ui.sel], ['weekend', i >= 5]]) { h.classList.toggle(k, v); c.classList.toggle(k, v); }
   }
+  renderZone();
+}
+// 时间轴左上角：用的不是系统时区时，标出是哪里的时间（点一下可以改）
+function renderZone() {
+  const b = $('#tzCorner'), id = data.settings.tz, on = id !== 'system';
+  b.hidden = !on; if (!on) return;
+  const nm = zoneName(id), off = fmtOff(zoneOffset(id));
+  const html = `<span class="c">${esc(nm.split(' · ')[0])}</span><span class="o">${off}</span>`;
+  if (b._html !== html) { b.innerHTML = html; b._html = html; b.title = `按${nm}时间显示和提醒（${id}，${off}）\n点击更改时区`; }
 }
 
 const blocks = new Map();   // key -> 日程块元素（跨渲染复用，位置变化自带过渡）
@@ -826,21 +863,141 @@ function openChoice(anchor, text, buttons, onCancel) {
   openPop(p, rect, 'right', { kind: 'choice', onClose: () => { if (!chosen && onCancel) onCancel(); } });
 }
 
-// 设置浮层
-function openSettings() {
+// 时区：常用城市（中文名 + 搜索关键词），按此刻的偏移从西到东排；搜索时还会查遍系统支持的全部时区
+const ZONES = [
+  ['Pacific/Honolulu', '檀香山', '夏威夷 美国'], ['America/Anchorage', '安克雷奇', '阿拉斯加 美国'],
+  ['America/Los_Angeles', '洛杉矶 · 旧金山', '美国 西雅图 太平洋 pacific'], ['America/Vancouver', '温哥华', '加拿大'],
+  ['America/Denver', '丹佛', '美国 山地 mountain'], ['America/Phoenix', '凤凰城', '美国 亚利桑那'],
+  ['America/Chicago', '芝加哥', '美国 中部 central 休斯顿 达拉斯'], ['America/Mexico_City', '墨西哥城', '墨西哥'],
+  ['America/New_York', '纽约', '美国 东部 eastern 波士顿 华盛顿'], ['America/Toronto', '多伦多', '加拿大 蒙特利尔'],
+  ['America/Halifax', '哈利法克斯', '加拿大 大西洋'], ['America/Sao_Paulo', '圣保罗', '巴西 里约'],
+  ['America/Argentina/Buenos_Aires', '布宜诺斯艾利斯', '阿根廷'],
+  ['Europe/London', '伦敦', '英国 gmt'], ['UTC', '协调世界时', 'utc gmt 格林尼治'],
+  ['Europe/Paris', '巴黎', '法国'], ['Europe/Berlin', '柏林', '德国 慕尼黑'], ['Europe/Madrid', '马德里', '西班牙'],
+  ['Europe/Rome', '罗马', '意大利'], ['Europe/Amsterdam', '阿姆斯特丹', '荷兰'],
+  ['Europe/Athens', '雅典', '希腊'], ['Europe/Kyiv', '基辅', '乌克兰'], ['Africa/Cairo', '开罗', '埃及'],
+  ['Africa/Johannesburg', '约翰内斯堡', '南非'], ['Europe/Istanbul', '伊斯坦布尔', '土耳其'], ['Europe/Moscow', '莫斯科', '俄罗斯'],
+  ['Asia/Dubai', '迪拜', '阿联酋'], ['Asia/Tehran', '德黑兰', '伊朗'], ['Asia/Karachi', '卡拉奇', '巴基斯坦'],
+  ['Asia/Kolkata', '新德里 · 孟买', '印度'], ['Asia/Kathmandu', '加德满都', '尼泊尔'], ['Asia/Dhaka', '达卡', '孟加拉'],
+  ['Asia/Urumqi', '乌鲁木齐', '新疆 中国'], ['Asia/Bangkok', '曼谷', '泰国'], ['Asia/Ho_Chi_Minh', '胡志明市', '越南 河内'],
+  ['Asia/Jakarta', '雅加达', '印度尼西亚 印尼'],
+  ['Asia/Shanghai', '北京 · 上海', '中国 北京时间 china beijing'], ['Asia/Hong_Kong', '香港', ''], ['Asia/Macau', '澳门', 'macao'],
+  ['Asia/Taipei', '台北', '台湾'], ['Asia/Singapore', '新加坡', ''], ['Asia/Kuala_Lumpur', '吉隆坡', '马来西亚'],
+  ['Asia/Manila', '马尼拉', '菲律宾'], ['Australia/Perth', '珀斯', '澳大利亚 澳洲'],
+  ['Asia/Seoul', '首尔', '韩国'], ['Asia/Tokyo', '东京', '日本 大阪'],
+  ['Australia/Adelaide', '阿德莱德', '澳大利亚 澳洲'], ['Australia/Brisbane', '布里斯班', '澳大利亚 澳洲 昆士兰'],
+  ['Australia/Sydney', '悉尼 · 墨尔本', '澳大利亚 澳洲'], ['Pacific/Auckland', '奥克兰', '新西兰'],
+];
+const ZMAP = new Map(ZONES.map(z => [z[0], z]));
+// WebKit 的时区列表里还用着这几座城市的旧名，换成现名，免得同一个地方出现两次
+const TZ_ALIAS = { 'America/Buenos_Aires': 'America/Argentina/Buenos_Aires', 'Asia/Calcutta': 'Asia/Kolkata', 'Asia/Katmandu': 'Asia/Kathmandu', 'Asia/Saigon': 'Asia/Ho_Chi_Minh', 'Europe/Kiev': 'Europe/Kyiv' };
+const zmeta = id => ZMAP.get(TZ_ALIAS[id] || id);
+const zoneName = id => zmeta(id)?.[1] || id.split('/').pop().replace(/_/g, ' ');
+function zoneOffset(id, t = Date.now()) {   // 此刻比 UTC 快多少分钟（各地偏移都是整分钟，先对齐到整分）
+  const t0 = Math.floor(t / 60000) * 60000, w = wallIn(realTz(id), t0), [y, m, d] = w.ds.split('-').map(Number);
+  return Math.round((Date.UTC(y, m - 1, d) + w.min * 60000 - t0) / 60000);
+}
+const fmtOff = o => `UTC${o < 0 ? '−' : '+'}${Math.floor(Math.abs(o) / 60)}${Math.abs(o) % 60 ? ':' + pad(Math.abs(o) % 60) : ''}`;
+let allZones = null;
+function zoneItems(query) {   // 空查询：跟随系统 + 常用；否则按城市 / 国家 / 英文名搜，或按“+8”“UTC-5”这样的偏移找
+  const t = Date.now(), q = query.trim().toLowerCase().replace(/[_\s]+/g, ' ');
+  const common = ZONES.map(z => [z[0], zoneOffset(z[0], t)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+  if (!q) return ['system', ...common];
+  const om = q.replace(/[−–]/g, '-').match(/^(?:utc|gmt)?\s*([+-])\s*(\d{1,2})(?:[:：]?(\d{2}))?$/);
+  const want = om && (om[1] === '-' ? -1 : 1) * (+om[2] * 60 + (+om[3] || 0));
+  const text = id => `${id} ${(zmeta(id) || []).slice(1).join(' ')}`.toLowerCase().replace(/_/g, ' ');
+  const sysText = `跟随系统 系统 本地 system local ${text(SYS_TZ)} ${zoneName(SYS_TZ)}`;
+  if (om) return [...(zoneOffset('system', t) === want ? ['system'] : []), ...common.filter(id => zoneOffset(id, t) === want)];
+  if (!allZones) {
+    let ids = []; try { ids = Intl.supportedValuesOf('timeZone'); } catch {}
+    allZones = [...new Set(ids.map(id => TZ_ALIAS[id] || id))].filter(id => !ZMAP.has(id)).sort();
+  }
+  return [...(sysText.includes(q) ? ['system'] : []), ...common.filter(id => text(id).includes(q)), ...allZones.filter(id => text(id).includes(q))].slice(0, 60);
+}
+function zoneRow(id, cur, t) {
+  const m = zmeta(id), nm = id === 'system' ? `跟随系统<small>${esc(zoneName(SYS_TZ))}</small>`
+    : m ? esc(m[1]) : `${esc(zoneName(id))}<small>${esc(id.split('/').slice(0, -1).join(' / '))}</small>`;
+  return `<button class="tz-it${id === cur ? ' on' : ''}" data-tz="${esc(id)}" title="${esc(realTz(id))}"><span class="nm">${nm}</span>`
+    + `<span class="off">${fmtOff(zoneOffset(id, t))}</span><span class="tm">${hm(wallIn(realTz(id), t).min)}</span></button>`;
+}
+function setTz(id) {
+  if (id === data.settings.tz || !(id === 'system' || (tzOK && validTz(id)))) return;
+  data.settings.tz = id; save();
+  tick(); renderHeader();   // “今天”可能跟着变：tick 负责换日，并刷新时间线和过去 / 进行中的日程
+  if (!ui.mini) scrollToNow();
+}
+
+// 设置浮层（page = 'tz' 时直接打开时区页）
+function openSettings(page, anchor = $('#settingsBtn')) {
   const s = data.settings;
   const p = el(`<div class="pop pop-set">
+    <div class="set-main">
     <h4>设置</h4>
     <div class="set-row th-row"><span class="lab">纸色</span><div class="themes">${THEMES.map(([k, n, c]) => `<button class="th${s.theme === k ? ' on' : ''}" data-th="${k}" style="background:${c}"><span>${n}</span></button>`).join('')}</div></div>
     <div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>
     <div class="set-row"><span class="lab">一屏显示</span><div class="stepper"><button data-st="ds-1">−</button><b class="dsv">${pad(s.dayStart)}:00</b><button data-st="ds1">+</button><span style="color:var(--ink-3);margin:0 2px">至</span><button data-st="de-1">−</button><b class="dev">${pad(s.dayEnd)}:00</b><button data-st="de1">+</button></div></div>
+    ${tzOK ? '<div class="set-row"><span class="lab">时区</span><button class="tz-cur" title="笺按哪里的时间显示日程、发出提醒"></button></div>' : ''}
     <div class="set-row"><span class="lab">开机后在后台待命</span><button class="switch${ui.autostart ? ' on' : ''}" title="登录后自动在后台启动，以便准时提醒"></button></div>
     <div class="set-row"><span class="lab">数据</span><button class="link open-data">打开数据文件夹</button></div>
     <div class="keys"><kbd>←</kbd><kbd>→</kbd>翻周　<kbd>T</kbd>回到今天　<kbd>N</kbd>新待办<br><kbd>M</kbd>迷你卡片　<kbd>P</kbd>置顶　<kbd>Ctrl</kbd>+<kbd>Z</kbd>撤销<br><kbd>Esc</kbd>隐藏到后台　<kbd>Ctrl</kbd>+<kbd>Q</kbd>彻底退出</div>
     <div class="ver">笺 v${esc(BOOT.version || 'dev')}</div>
+    </div>
+    <div class="set-tz" hidden>
+      <div class="tz-top"><button class="ib tz-back" title="返回设置">${I.left}</button><h4>时区</h4></div>
+      <input class="tz-q" placeholder="搜索城市、国家，或输入 +8" spellcheck="false" autocomplete="off">
+      <div class="tz-list"></div>
+      <p class="tz-note">日程和提醒都按所选时区的钟点走；切换时区不会改动已经排好的时间。</p>
+    </div>
   </div>`);
+  const main = $('.set-main', p), tzp = $('.set-tz', p), q = $('.tz-q', p), list = $('.tz-list', p);
+  let hi = -1;   // 键盘 ↑↓ 选中的那一行
+  const paintCur = () => {
+    const b = $('.tz-cur', p);
+    if (b) b.innerHTML = `<span class="nm">${s.tz === 'system' ? '跟随系统' : esc(zoneName(s.tz))}</span><em>${fmtOff(zoneOffset(s.tz))}</em>${I.right}`;
+  };
+  const fillTz = () => {
+    const t = Date.now(), ids = zoneItems(q.value);
+    list.innerHTML = ids.length ? ids.map(id => zoneRow(id, s.tz, t)).join('') : '<div class="tz-empty">没有找到，换个城市或国家试试</div>';
+    hi = -1; list.scrollTop = 0;
+  };
+  const retime = () => {   // 列表开着时每分钟更新各地的钟点
+    const t = Date.now();
+    for (const b of $$('.tz-it', list)) {
+      b.querySelector('.off').textContent = fmtOff(zoneOffset(b.dataset.tz, t));
+      b.querySelector('.tm').textContent = hm(wallIn(realTz(b.dataset.tz), t).min);
+    }
+  };
+  const reveal = n => {
+    if (n.offsetTop < list.scrollTop) list.scrollTop = n.offsetTop;
+    else if (n.offsetTop + n.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = n.offsetTop + n.offsetHeight - list.clientHeight;
+  };
+  const showPage = (tz, anim = true) => {
+    if (tz) { tzp.style.height = main.offsetHeight + 'px'; q.value = ''; }   // 两页一样高，卡片不会跳
+    main.hidden = tz; tzp.hidden = !tz;
+    if (tz) {
+      fillTz();
+      const on = $('.tz-it.on', list); if (on) list.scrollTop = on.offsetTop - (list.clientHeight - on.offsetHeight) / 2;
+      q.focus();
+    } else paintCur();
+    if (anim && motion) (tz ? tzp : main).animate([{ opacity: 0, transform: `translateX(${tz ? 18 : -18}px)` }, { opacity: 1, transform: 'none' }], { duration: 240, easing: EASE });
+  };
+  paintCur();
+  q.addEventListener('input', fillTz);
+  q.addEventListener('keydown', e => {
+    if (composing(e)) return;
+    const its = $$('.tz-it', list);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); if (!its.length) return;
+      hi = clamp(hi + (e.key === 'ArrowDown' ? 1 : -1), 0, its.length - 1);
+      its.forEach((x, i) => x.classList.toggle('hi', i === hi)); reveal(its[hi]);
+    } else if (e.key === 'Enter') { e.preventDefault(); (its[hi] || its[0])?.click(); }
+  });
   p.addEventListener('click', e => {
     const t = e.target;
+    if (t.closest('.tz-cur')) return showPage(true);
+    if (t.closest('.tz-back')) return showPage(false);
+    const z = t.closest('[data-tz]');
+    if (z) { setTz(z.dataset.tz); showPage(false); return; }
     const th = t.closest('[data-th]');
     if (th) { s.theme = th.dataset.th; applyTheme(); save(); for (const x of $$('.th', p)) x.classList.toggle('on', x === th); return; }
     const rem = t.closest('[data-rem]');
@@ -857,7 +1014,8 @@ function openSettings() {
     if (t.closest('.switch')) { ui.autostart = !ui.autostart; t.closest('.switch').classList.toggle('on', ui.autostart); send('setAutostart', { on: ui.autostart }); return; }
     if (t.closest('.open-data')) { send('openDataDir'); if (!native) toast('预览模式下数据保存在浏览器里'); }
   });
-  openPop(p, $('#settingsBtn').getBoundingClientRect(), 'below', { kind: 'settings' });
+  openPop(p, anchor.getBoundingClientRect(), 'below', { kind: 'settings', tick: () => { paintCur(); if (!tzp.hidden) retime(); } });
+  if (page === 'tz') showPage(true, false);
 }
 function applyTheme() { document.documentElement.dataset.theme = data.settings.theme || 'xuan'; }
 
@@ -895,7 +1053,7 @@ function selectDay(ds) {
   if (ui.sel === ds) return;
   ui.sel = ds; renderHeader(); renderDays(); renderTodo();
 }
-function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(mondayOf(new Date())); } else selectDay(td); scrollToNow(); }
+function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(thisMonday()); } else selectDay(td); scrollToNow(); }
 function scrollToNow() {
   const top = nowMin() / 60 * ui.hourH;
   if (top < scroller.scrollTop || top > scroller.scrollTop + scroller.clientHeight - 30)
@@ -973,11 +1131,12 @@ function reportDrag() {
 
 // ───────────────────────── 时钟（每分钟一次） ─────────────────────────
 function tick() {
+  if (pop && pop.tick) pop.tick();
   const td = today();
-  if (td !== ui.day) {
+  if (td !== ui.day) {   // 跨过了零点（或换了时区）
     const old = ui.day; ui.day = td;
     if (ui.sel === old) ui.sel = td;
-    if (inWeek(old)) ui.week = mondayOf(new Date());
+    if (inWeek(old)) ui.week = thisMonday();
     renderAll(); return;
   }
   renderDays(); renderGrid(true); renderTodo();
@@ -1028,6 +1187,7 @@ function init() {
   $('#nextWeek').onclick = () => gotoWeek(addDays(ui.week, 7));
   $('#todayBtn').onclick = goToday;
   $('#settingsBtn').onclick = () => { if (closedKind !== 'settings') openSettings(); };
+  $('#tzCorner').onclick = e => { if (closedKind !== 'settings') openSettings('tz', e.currentTarget); };
   $('#pinBtn').onclick = $('#pinBtn2').onclick = togglePin;
   $('#miniBtn').onclick = $('#expandBtn').onclick = toggleMini;
   $('#minBtn').onclick = () => send('minimize');
@@ -1060,7 +1220,8 @@ window.App = {
     flashGroup(key);
   },
   // 供测试脚本使用
-  _debug: { get data() { return data; }, set data(v) { data = normalize(v); renderAll(); }, ui, renderAll, createEvent, openEvPop, openSettings, toast, gotoWeek, selectDay, closePop, toggleMini, onMode },
+  _debug: { get data() { return data; }, set data(v) { data = normalize(v); renderAll(); }, ui, renderAll, createEvent, openEvPop, openSettings, toast, gotoWeek, selectDay, closePop, toggleMini, onMode,
+    today, nowMin, setTz, zoneOffset, zoneItems, undo },
 };
 
 init();

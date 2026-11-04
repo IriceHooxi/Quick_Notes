@@ -525,6 +525,50 @@ body.mini .grp-h.ev-link:hover .ttl { text-decoration: none; }
 .link { color: var(--ink-2); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; font-size: 13px; }
 .link:hover { color: var(--ink); }
 
+/* 时区：设置里的一行 + 选择页 */
+.tz-cur { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 2px 3px 9px; margin-right: -4px; border-radius: 8px; font-size: 13px; transition: background .18s; }
+.tz-cur:hover { background: var(--hover); }
+.tz-cur .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tz-cur em { font-style: normal; font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tz-cur svg { width: 15px; height: 15px; color: var(--ink-3); }
+.set-tz { display: flex; flex-direction: column; min-height: 0; }
+.tz-top { display: flex; align-items: center; gap: 2px; margin: -3px 0 8px -8px; }
+.pop-set .tz-top h4 { margin: 0; }
+.tz-q {
+  flex: none; width: 100%; border: 0; outline: 0; padding: 6px 10px; border-radius: 8px;
+  background: var(--wash); font-size: 13.5px; transition: background .2s, box-shadow .2s;
+  user-select: text; -webkit-user-select: text;
+}
+.tz-q:focus { background: var(--paper); box-shadow: 0 0 0 1.5px var(--ink-3); }
+.tz-q::placeholder { color: var(--ink-3); }
+.tz-list { position: relative; flex: 1; min-height: 0; overflow-y: auto; margin: 6px -10px 0 -8px; padding-right: 4px; }
+.tz-list::-webkit-scrollbar { width: 6px; }
+.tz-list::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+.tz-it { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 8px; text-align: left; font-size: 13.5px; color: var(--ink-2); transition: background .15s, color .15s; }
+.tz-it::before { content: ''; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--spring); }
+.tz-it:hover, .tz-it.hi { background: var(--hover); color: var(--ink); }
+.tz-it.on { color: var(--ink); }
+.tz-it.on::before { opacity: 1; transform: none; }
+.tz-it .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tz-it small { margin-left: 6px; font-size: 11.5px; color: var(--ink-3); }
+.tz-it .off { flex: none; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.tz-it .tm { flex: none; width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+.tz-empty { padding: 22px 0; text-align: center; font-size: 12.5px; color: var(--ink-3); }
+.tz-note { flex: none; margin: 8px 0 0; padding-top: 8px; border-top: 1px dashed var(--rule); font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
+
+/* 时间轴左上角：不跟随系统时，标出用的是哪里的时间 */
+.corner { position: relative; }
+.tz-corner {
+  position: absolute; left: 0; right: 2px; bottom: 9px;
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: 3px 7px 3px 0; border-radius: 7px;
+  font-size: 10.5px; line-height: 1.3; color: var(--ink-3);
+  transition: background .18s, color .18s;
+}
+.tz-corner:hover { background: var(--wash); color: var(--ink-2); }
+.tz-corner .c { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tz-corner .o { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
 .toasts { position: fixed; left: 50%; bottom: calc(var(--m) + 18px); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; z-index: 60; }
 .toast {
   pointer-events: auto;

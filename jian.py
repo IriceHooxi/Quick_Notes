@@ -24,6 +24,10 @@ import time
 import shutil
 import signal
 import datetime
+try:
+    from zoneinfo import ZoneInfo     # Python 3.9+；更早的版本只能跟随系统时区
+except ImportError:
+    ZoneInfo = None
 
 VERSION = '1.0.0'
 APP_ID = 'io.jian.Notes'
@@ -39,6 +43,17 @@ HIBERNATE_AFTER = int(os.environ.get('JIAN_HIBERNATE', 20 * 60))  # 隐藏超过
 
 def log(*a):
     print('[jian]', *a, file=sys.stderr, flush=True)
+
+
+def app_zone(settings):
+    """设置里选的时区（与 app.js 一致）：'system'、无效或不支持时返回 None，表示跟随系统。"""
+    name = (settings or {}).get('tz') or 'system'
+    if name == 'system' or ZoneInfo is None or not isinstance(name, str):
+        return None
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return None
 
 
 # ───────────────────────── 快速转发（不加载 GTK/WebKit） ─────────────────────────
@@ -250,24 +265,29 @@ def make_app(hidden, debug, initial):
 
         def _check(self):
             data = self.app.store.data or {}
+            settings = data.get('settings') or {}
             try:
-                lead = int((data.get('settings') or {}).get('remind', 10))
+                lead = int(settings.get('remind', 10))
             except (TypeError, ValueError):
                 lead = 10
             if lead <= 0:
                 return
-            now = datetime.datetime.now()
+            # 日程记的是“几点几分”，按设置的时区（默认跟随系统）换算成绝对时刻再比较，夏令时切换也不会错
+            tz = app_zone(settings)
+            now = time.time()
+            today = datetime.datetime.fromtimestamp(now, tz).date()
             tasks = data.get('tasks') or []
-            for d in (now.date(), now.date() + datetime.timedelta(days=1)):
+            for d in (today, today + datetime.timedelta(days=1)):
                 for ev in data.get('events') or []:
                     if not isinstance(ev, dict) or ev.get('remind') is False or not occurs_on(ev, d):
                         continue
                     s, e = int(ev.get('start', 0)), int(ev.get('end', 0))
-                    start = datetime.datetime.combine(d, datetime.time()) + datetime.timedelta(minutes=s)
+                    wall = datetime.datetime.combine(d, datetime.time()) + datetime.timedelta(minutes=s)
+                    start = wall.replace(tzinfo=tz).timestamp()     # tz 为 None 时按系统时区解释
                     key = f'{ev.get("id")}@{d}@{s}'
-                    if start - datetime.timedelta(minutes=lead) <= now < start and key not in self.sent:
+                    if start - lead * 60 <= now < start and key not in self.sent:
                         self.sent.add(key)
-                        left = max(1, round((start - now).total_seconds() / 60))
+                        left = max(1, round((start - now) / 60))
                         todo = [t for t in tasks if isinstance(t, dict) and t.get('eventId') == ev.get('id')
                                 and t.get('date') == d.isoformat() and not t.get('done')]
                         body = f'{left} 分钟后开始 · {hm(s)}–{hm(e)}'
@@ -278,8 +298,7 @@ def make_app(hidden, debug, initial):
                         self.app.notifier.send(esc(ev.get('title') or '未命名日程'), body,
                                                {'date': d.isoformat(), 'id': ev.get('id')})
             if len(self.sent) > 300:
-                today = now.date().isoformat()
-                self.sent = {k for k in self.sent if k.split('@')[1] >= today}
+                self.sent = {k for k in self.sent if k.split('@')[1] >= today.isoformat()}
 
     # ───────────── 顶栏托盘图标（StatusNotifierItem + dbusmenu） ─────────────
     SNI_XML = '''<node><interface name="org.kde.StatusNotifierItem">
@@ -507,7 +526,8 @@ def make_app(hidden, debug, initial):
 
         def _boot_script(self):
             boot = {'data': self.store.data, 'mini': self.mode == 'mini', 'pinned': self.pinned,
-                    'autostart': autostart_enabled(), 'opaque': not self.transparent, 'version': VERSION}
+                    'autostart': autostart_enabled(), 'opaque': not self.transparent, 'version': VERSION,
+                    'zones': ZoneInfo is not None}
             src = 'window.__BOOT__=' + json.dumps(boot, ensure_ascii=False) + ';'
             return WebKit2.UserScript.new(src, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                                           WebKit2.UserScriptInjectionTime.START, None, None)
