@@ -14,7 +14,7 @@ cd "$ROOT"
 
 VER="$(git show "$REF:jian.py" | sed -n "s/^VERSION = '\(.*\)'$/\1/p")"
 [[ -n "$VER" ]] || { echo "无法从 jian.py 读到 VERSION"; exit 1; }
-DIST="$ROOT/dist"
+DIST="${DIST:-$ROOT/dist}"          # 可用环境变量 DIST 指定输出目录
 mkdir -p "$DIST"
 STAGE="$(mktemp -d)"
 trap 'rm -rf -- "$STAGE"' EXIT      # 只清理本脚本创建的临时目录
@@ -66,20 +66,30 @@ Name=退出笺
 Exec=jian --quit
 EOF
 
-cat > "$DOC/copyright" <<'EOF'
+# 许可证：仓库里有 LICENSE（MIT，Debian 称 Expat）就写入全文；更早的版本没有则注明以仓库为准
+if git cat-file -e "$REF:LICENSE" 2>/dev/null; then
+  LIC_NAME="Expat"
+  LIC_TEXT="$(git show "$REF:LICENSE" | sed -n '/^Permission/,$p' | sed 's/^$/./; s/^/ /')"
+else
+  LIC_NAME="see-repository"
+  LIC_TEXT=" License terms are those stated in the upstream repository."
+fi
+cat > "$DOC/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Quick_Notes (笺)
 Source: https://github.com/IriceHooxi/Quick_Notes
 
 Files: *
 Copyright: 2026 IriceHooxi
-License: see-repository
- License terms are those stated in the upstream repository.
+License: $LIC_NAME
 
-Files: usr/share/jian/ui/fonts/wenkai/*
+Files: ui/fonts/wenkai/*
 Copyright: 2021-2026 LXGW (霞鹜)
 License: OFL-1.1
  The full license text is in /usr/share/jian/ui/fonts/wenkai/OFL.txt
+
+License: $LIC_NAME
+$LIC_TEXT
 EOF
 
 find "$PKG" -type d -exec chmod 755 {} +

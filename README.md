@@ -92,3 +92,8 @@ packaging/build.sh   构建发行包（.deb 与源码 tar.gz）到 dist/
 ## 致谢
 
 界面字体：[霞鹜文楷](https://github.com/lxgw/LxgwWenKai)（SIL Open Font License 1.1）。
+
+## 许可证
+
+本项目代码以 [MIT 许可证](LICENSE) 发布。
+`ui/fonts/wenkai/` 中的字体文件不属于 MIT 范围，仍遵循 SIL Open Font License 1.1（见该目录下的 `OFL.txt`）。
