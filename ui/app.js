@@ -202,12 +202,101 @@ function enter(n) {
   const h = n.offsetHeight; n.style.overflow = 'hidden';
   n.animate([{ height: '0px', opacity: 0, transform: 'translateY(-4px)' }, { height: h + 'px', opacity: 1, transform: 'none' }],
     { duration: 260, easing: EASE }).onfinish = () => { n.style.overflow = ''; };
+  if (n.classList.contains('task')) writeIn(n);
 }
-function leave(n) {
+function leave(n) {   // 先向右轻轻拂去，再收起高度
   n._leaving = true; n.style.pointerEvents = 'none'; n.style.overflow = 'hidden';
-  const h = n.offsetHeight;
-  n.animate([{ height: h + 'px', opacity: 1 }, { height: '0px', opacity: 0, paddingTop: '0px', paddingBottom: '0px' }],
-    { duration: 220, easing: EASE }).onfinish = () => n.remove();
+  const h = n.offsetHeight + 'px';
+  n.animate([
+    { height: h, opacity: 1, transform: 'none', easing: 'cubic-bezier(.3,.6,.4,1)' },
+    { height: h, opacity: 0, transform: 'translateX(16px)', offset: .5, easing: 'ease-in-out' },
+    { height: '0px', opacity: 0, transform: 'translateX(16px)', paddingTop: '0px', paddingBottom: '0px' },
+  ], { duration: 340 }).onfinish = () => n.remove();
+}
+
+// ───────────────────────── 小动效 ─────────────────────────
+// 只在交互的那一下播放：临时放几个小元素，播完即删，空闲时没有任何动画在跑。
+// 意象都取自纸和墨：洇开的墨、笔锋甩出的墨点、印泥、落下的纸条。
+const FX = $('#fx'), OUT = 'cubic-bezier(.2,.7,.3,1)';
+const fxOnce = a => { a.onfinish = a.oncancel = () => a.effect.target.remove(); return a; };
+function fxDot(cls, x, y, size, color) {   // 在动效层放一个一次性的小圆点 / 印痕
+  const s = document.createElement('i'); s.className = cls;
+  s.style.cssText = `left:${x}px;top:${y}px` + (size ? `;width:${size}px;height:${size}px;margin:${-size / 2}px 0 0 ${-size / 2}px` : '') + (color ? `;--fc:${color}` : '');
+  FX.appendChild(s); return s;
+}
+function inkCheck(chk) {   // 勾选：方框四周洇开一圈淡墨，勾的笔锋处甩出几粒墨点
+  if (!motion || !chk) return;
+  const r = chk.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  fxOnce(fxDot('fx-bloom', x, y, 40, 'var(--accent)').animate([   // 先很快洇开，再慢慢淡掉
+    { scale: .3, opacity: .95, easing: OUT }, { scale: 1.05, opacity: .8, offset: .4, easing: 'ease-in' }, { scale: 1.3, opacity: 0 },
+  ], { duration: 600, delay: 40, fill: 'backwards' }));
+  for (let i = 0; i < 3; i++) {
+    const a = (-80 + i * 38 + (Math.random() - .5) * 18) * Math.PI / 180, d = 9 + Math.random() * 6;
+    fxOnce(fxDot('fx-speck', x + 8.5, y - 7.5, 3.6 - i * .6, 'var(--accent)').animate([
+      { translate: '0 0', opacity: 0 }, { opacity: .85, offset: .2 },
+      { translate: `${Math.cos(a) * d}px ${Math.sin(a) * d}px`, opacity: 0, scale: .5 },
+    ], { duration: 460, delay: 190 + i * 35, easing: OUT, fill: 'backwards' }));
+  }
+  chk.querySelector('svg')?.animate([{ scale: 1 }, { scale: 1.16 }, { scale: 1 }], { duration: 340, easing: OUT });
+}
+function writeIn(li) {   // 新任务：方框一笔画出来，文字从左往右“写”出来
+  const box = li.querySelector('.box'), tx = li.querySelector('.tx'), t = li.querySelector('.tx-in');
+  try {
+    const L = Math.ceil(box.getTotalLength()) + 'px'; box.style.strokeDasharray = L;
+    box.animate([{ strokeDashoffset: L }, { strokeDashoffset: '0px' }], { duration: 420, easing: 'cubic-bezier(.45,.05,.35,1)' }).onfinish = () => { box.style.strokeDasharray = ''; };
+  } catch {}
+  if (!tx || !t) return;
+  // 按文字实际的宽度来“写”：短的写得快，长的写得慢一点；写完时刚好露出整行
+  const R = tx.getBoundingClientRect(), r = t.getBoundingClientRect(), w = r.right - R.left;
+  tx.animate([{ clipPath: `inset(-3px ${R.width}px -3px 0)` }, { clipPath: `inset(-3px ${Math.max(0, R.right - r.right - 3)}px -3px 0)` }],
+    { duration: clamp(200 + w * 1.4, 300, 620), delay: 90, easing: 'cubic-bezier(.4,.1,.35,1)', fill: 'backwards' });
+}
+function stampRing(seal) {   // 「毕」落下的那一刻，纸面上晕开一圈印泥
+  if (!motion) return;
+  const r = seal.getBoundingClientRect();
+  fxOnce(fxDot('fx-stamp', r.left + r.width / 2, r.top + r.height / 2).animate(
+    [{ scale: .92, opacity: 0 }, { scale: 1, opacity: .55, offset: .12 }, { scale: 1.5, opacity: 0 }],
+    { duration: 620, delay: 270, easing: OUT, fill: 'backwards' }));
+}
+function inkFill(b) {   // 新日程：墨色从上往下注满这段时间
+  b.animate([{ clipPath: 'inset(0 0 100% 0 round 3px 8px 8px 3px)' }, { clipPath: 'inset(0 0 0 0 round 3px 8px 8px 3px)' }], { duration: 380, easing: EASE });
+}
+function lift(b) {   // 拿起日程块：微微放大、倾斜
+  if (motion) b._lift = b.animate([{ scale: 1, rotate: '0deg' }, { scale: 1.035, rotate: '-.8deg' }], { duration: 160, easing: EASE, fill: 'forwards' });
+}
+function land(b) {   // 放下：轻轻一顿再落定
+  const l = b && b._lift; if (!l) return;
+  b._lift = null; l.cancel();
+  b.animate([{ scale: 1.035, rotate: '-.8deg' }, { scale: .985, rotate: '0deg', offset: .55 }, { scale: 1, rotate: '0deg' }], { duration: 320, easing: 'ease-out' });
+}
+function fadeAway(n) {
+  n.style.pointerEvents = 'none';
+  if (motion) fxOnce(n.animate([{ opacity: 0 }], { duration: 260, easing: EASE })); else n.remove();
+}
+function wash(b, from) {   // 换颜色：旧颜色带着柔边退向右下角，新颜色像从左上角洇开
+  if (!motion || !b) return;
+  const s = document.createElement('i'), k = 1.85;   // 1/0.55：柔边一开始正好贴着左上角
+  s.className = 'fx-wash'; s.style.setProperty('--c', from);
+  b.appendChild(s);
+  fxOnce(s.animate([{ maskSize: `${b.offsetWidth * k}px ${b.offsetHeight * k}px` }, { maskSize: '0px 0px' }], { duration: 560, easing: 'cubic-bezier(.35,.15,.3,1)' }));
+}
+function pingNow() {   // 回到今天：“现在”的小红点泛起一圈涟漪
+  const nl = $('#nowLine'); if (!motion || nl.hidden || ui.mini) return;
+  const s = document.createElement('i'); s.className = 'fx-ping'; nl.querySelector('.seg').appendChild(s);
+  fxOnce(s.animate([{ scale: .4, opacity: .8 }, { scale: 2.3, opacity: 0 }], { duration: 800, delay: 260, easing: OUT, fill: 'backwards' }));
+}
+const swing = (deg, at) => ({ rotate: deg + 'deg', offset: at, easing: 'ease-in-out' });   // 摆到头时慢、过中间时快
+const JIGGLE = {   // 小图标：铃铛摇一摇 / 轻按一下；图钉按下去 / 拔起来
+  ring: [[{ rotate: '0deg', easing: 'ease-out' }, swing(14, .14), swing(-11, .36), swing(6, .58), swing(-2.5, .78), { rotate: '0deg' }], 620, 'linear'],
+  tap: [[{ scale: 1 }, { scale: .8 }, { scale: 1 }], 260],
+  pinIn: [[{ translate: '0 -4px', rotate: '-14deg' }, { translate: '0 1.5px', rotate: '0deg', offset: .6 }, { translate: '0 0', rotate: '0deg' }], 380],
+  pinOut: [[{ translate: '0 0', rotate: '0deg' }, { translate: '0 -4px', rotate: '-10deg', offset: .45 }, { translate: '0 0', rotate: '0deg' }], 380],
+};
+function jiggle(svg, kind) { const [k, ms, ease = 'ease-out'] = JIGGLE[kind]; if (motion && svg) svg.animate(k, { duration: ms, easing: ease }); }
+function rollTo(n, txt, anim, dir = 1) {   // 数字换了：新数字从下方（变少时从上方）轻轻冒出来
+  if (n.textContent === txt) return;
+  n.textContent = txt;
+  if (anim && motion && txt) n.animate([{ translate: `0 ${dir * 6}px`, opacity: 0 }, { translate: '0 0', opacity: 1 }], { duration: 260, easing: EASE });
 }
 
 // ───────────────────────── 顶栏 ─────────────────────────
@@ -222,7 +311,7 @@ function renderHeader() {
   if (!ws.firstChild) ws.innerHTML = '<span>本周待办</span><span class="wbar"><i></i></span><span class="n"></span>';
   ws.style.visibility = tot ? '' : 'hidden';
   ws.querySelector('i').style.setProperty('--p', tot ? (dn / tot * 100) + '%' : '0%');
-  ws.querySelector('.n').textContent = `${dn}/${tot}`;
+  rollTo(ws.querySelector('.n'), `${dn}/${tot}`, ws._wk === s, dn < (ws._dn ?? dn) ? -1 : 1); ws._wk = s; ws._dn = dn;
 }
 
 // ───────────────────────── 周视图 ─────────────────────────
@@ -281,14 +370,18 @@ function renderGrid(instant = false) {
       if (fresh) { b = document.createElement('div'); b.className = 'ev'; blocks.set(o.key, b); }
       if (b.parentNode !== col) col.appendChild(b);
       fillBlock(b, o, dayTasks, td, nm);
-      if (fresh && !instant && motion) b.animate([{ opacity: 0, transform: 'scaleY(.4)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: EASE });
+      if (fresh && !instant && motion) inkFill(b);
+      if (b._lift && !b.classList.contains('dragging')) land(b);   // 兜底：拖动结束总要落定
     }
   }
   for (const [k, b] of blocks) {
     if (seen.has(k)) continue;
     blocks.delete(k);
     if (instant || !motion) b.remove();
-    else { b.style.pointerEvents = 'none'; b.animate([{ opacity: 1 }, { opacity: 0, transform: 'scale(.95)' }], { duration: 200, easing: EASE }).onfinish = () => b.remove(); }
+    else {   // 删掉的日程像纸条一样往下飘走
+      b.style.pointerEvents = 'none';
+      b.animate([{ opacity: 0, translate: '0 8px', rotate: '-1.5deg', scale: .96 }], { duration: 300, easing: 'cubic-bezier(.45,0,.8,.5)' }).onfinish = () => b.remove();
+    }
   }
   if (pop && pop.kind === 'ev') blocks.get(pop.key)?.classList.add('active');
   updateNow();
@@ -368,6 +461,7 @@ function dragMove() {
       colEls[d.day].appendChild(d.g);
     } else {
       d.b.classList.add('dragging'); d.b.style.setProperty('--l', 0); d.b.style.setProperty('--w', 1);
+      if (d.kind === 'move') lift(d.b);
       if (pop && pop.kind === 'ev' && pop.evId === d.ev.id) pop.el.classList.add('dim');   // 拖动时让浮层淡出让路
       else closePop();
     }
@@ -406,7 +500,7 @@ function dragEnd() {
   const d = drag; drag = null; asV = 0;
   try { colsEl.releasePointerCapture(d.pid); } catch {}
   if (d.kind === 'create') {
-    if (d.g) d.g.remove();
+    if (d.g) fadeAway(d.g);   // 划出的虚线框淡去，新日程的墨色同时注满
     let s = d.start, en = d.end;
     if (!d.moved) { s = clamp(floorTo(minAt(d.y0), 30), 0, 1380); en = s + 60; }
     createEvent(ymd(addDays(ui.week, d.day)), s, en);
@@ -427,7 +521,7 @@ function dragEnd() {
 }
 function dragCancel() { const d = drag; drag = null; asV = 0; if (d.g) d.g.remove(); if (d.b) dragRevert(d); }
 function dragRevert(d) {
-  d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._html = null; renderGrid(true);
+  d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._html = null; land(d.b); renderGrid(true);
   if (pop) pop.el.classList.remove('dim');
 }
 function settle(b) {   // 拖放落定：取消变换且本帧不做过渡，避免“弹回再飞过去”
@@ -465,6 +559,7 @@ function applyMove(d, newDate, scope) {
     if (ui.sel === d.occDate) ui.sel = newDate;
     if (own) { own.key = newKey; own.date = newKey.split('@')[1]; }
   }, !(own && own.isNew));   // 新建草稿的调整不单独记撤销：一次撤销就撤掉整个新日程
+  land(d.b);
   if (own && pop === own) {  // 浮层跟到日程块的新位置
     own.el.classList.remove('dim');
     const b = blocks.get(own.key);
@@ -492,7 +587,13 @@ function renderTodo() {
   const ds = ui.sel, td = today(), d = parse(ds), dayChanged = lastSel !== ds;
   const rel = { '-1': '昨天', 0: '今天', 1: '明天' }[diffDays(td, ds)] || '';
   const dateHtml = `<span class="big">${d.getDate()}</span><div><div class="wd">周${WD[d.getDay()]}${rel ? `<span class="tag">${rel}</span>` : ''}</div><div class="md">${CNM[d.getMonth()]} · ${d.getFullYear()}</div></div>`;
-  const dateEl = $('#todoDate'); if (dateEl._html !== dateHtml) { dateEl.innerHTML = dateHtml; dateEl._html = dateHtml; }
+  const dateEl = $('#todoDate');
+  if (dateEl._html !== dateHtml) {
+    dateEl.innerHTML = dateHtml; dateEl._html = dateHtml;
+    if (dayChanged && lastSel !== null && motion)   // 换天像翻日历：往后翻新日期从下方上来，往回翻从上方下来
+      [...dateEl.children].forEach((c, i) => c.animate([{ translate: `0 ${ds > lastSel ? 10 : -10}px`, opacity: 0 }, { translate: '0 0', opacity: 1 }],
+        { duration: 320, delay: i * 45, easing: EASE, fill: 'backwards' }));
+  }
 
   const occs = occsOn(ds), dayTasks = data.tasks.filter(t => t.date === ds).sort(byOrder);
   const ids = new Set(occs.map(o => o.ev.id));
@@ -511,12 +612,12 @@ function renderTodo() {
   const tot = dayTasks.length, dn = dayTasks.filter(t => t.done).length, complete = tot > 0 && dn === tot;
   const pg = $('#progress');
   pg.querySelector('i').style.setProperty('--p', tot ? (dn / tot * 100) + '%' : '0%');
-  pg.querySelector('span').textContent = tot ? `${dn} / ${tot}` : '';
+  rollTo(pg.querySelector('span'), tot ? `${dn} / ${tot}` : '', !dayChanged, dn < (pg._dn ?? dn) ? -1 : 1); pg._dn = dn;
   pg.classList.toggle('full', complete);
   const seal = $('#sealDone');
   if (complete !== lastComplete || dayChanged) {
     seal.classList.remove('show');
-    if (complete) { void seal.offsetWidth; seal.classList.add('show'); }
+    if (complete) { void seal.offsetWidth; seal.classList.add('show'); if (!dayChanged) stampRing(seal); }
   }
   seal.title = complete ? '这一天的待办全部完成' : '';
   lastComplete = complete;
@@ -588,6 +689,7 @@ function addTask(G, text) {
 }
 function toggleTask(id, li, G) {
   const t = data.tasks.find(x => x.id === id); if (!t) return;
+  if (!t.done) inkCheck(li.querySelector('.chk'));
   if (G.kind === 'carry' && !t.done) {          // 先让勾选动画播完，再从“没做完”里移走
     li.classList.add('done');
     setTimeout(() => commit(() => { t.done = true; t.doneAt = Date.now(); }), 650);
@@ -773,9 +875,11 @@ function autoGrow(t) { t.style.height = 'auto'; t.style.height = Math.min(120, t
 function bindEvPop(p) {
   const st = pop;
   p.querySelector('.swatches').addEventListener('click', e => {
-    const b = e.target.closest('.sw'); if (!b) return;
+    const b = e.target.closest('.sw'); if (!b || b.classList.contains('on')) return;
+    const from = `var(--c-${p.querySelector('.sw.on')?.dataset.c || 'dai'})`, id = blocks.get(st.key)?.dataset.id;
     editEv(ev => { ev.color = b.dataset.c; });
     for (const s of $$('.sw', p)) s.classList.toggle('on', s === b);
+    if (id) for (const blk of blocks.values()) if (blk.dataset.id === id) wash(blk, from);   // 重复日程：这一周里的每一块一起换
   });
   const title = p.querySelector('.pop-title');
   title.addEventListener('input', () => editEv(ev => { ev.title = title.value; }));
@@ -783,6 +887,7 @@ function bindEvPop(p) {
   p.querySelector('.bell').addEventListener('click', e => {
     editEv(ev => { ev.remind = ev.remind === false; });
     e.currentTarget.classList.toggle('on', findEv(st.evId).remind !== false);
+    jiggle(e.currentTarget.querySelector('svg'), findEv(st.evId).remind !== false ? 'ring' : 'tap');
     toast(findEv(st.evId).remind !== false ? `将在开始前 ${data.settings.remind || 10} 分钟提醒` : '已关闭这个日程的提醒');
   });
   p.querySelector('.x').addEventListener('click', () => closePop());
@@ -999,7 +1104,13 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     const z = t.closest('[data-tz]');
     if (z) { setTz(z.dataset.tz); showPage(false); return; }
     const th = t.closest('[data-th]');
-    if (th) { s.theme = th.dataset.th; applyTheme(); save(); for (const x of $$('.th', p)) x.classList.toggle('on', x === th); return; }
+    if (th) {   // 换纸色：整张纸柔和地渐变过去
+      const k = th.dataset.th, same = s.theme === k; s.theme = k; save();
+      const go = () => { applyTheme(); for (const x of $$('.th', p)) x.classList.toggle('on', x === th); };
+      if (motion && !same && document.startViewTransition) document.startViewTransition(go).ready.catch(() => {});   // 连点时上一次过渡被打断，属正常
+      else go();
+      return;
+    }
     const rem = t.closest('[data-rem]');
     if (rem) { s.remind = +rem.dataset.rem; save(); for (const x of $$('[data-rem]', p)) x.classList.toggle('on', x === rem); return; }
     const stp = t.closest('[data-st]');
@@ -1053,7 +1164,7 @@ function selectDay(ds) {
   if (ui.sel === ds) return;
   ui.sel = ds; renderHeader(); renderDays(); renderTodo();
 }
-function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(thisMonday()); } else selectDay(td); scrollToNow(); }
+function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(thisMonday()); } else selectDay(td); scrollToNow(); pingNow(); }
 function scrollToNow() {
   const top = nowMin() / 60 * ui.hourH;
   if (top < scroller.scrollTop || top > scroller.scrollTop + scroller.clientHeight - 30)
@@ -1092,7 +1203,11 @@ function moveInd() {
 function updatePinBtns() {
   for (const b of [$('#pinBtn'), $('#pinBtn2')]) { b.classList.toggle('on', ui.pinned); b.title = ui.pinned ? '取消置顶 (P)' : '置顶 (P)'; }
 }
-function togglePin() { ui.pinned = !ui.pinned; updatePinBtns(); send('setPinned', { pinned: ui.pinned }); if (!native) toast('预览模式不支持置顶'); }
+function togglePin() {
+  ui.pinned = !ui.pinned; updatePinBtns();
+  for (const b of [$('#pinBtn'), $('#pinBtn2')]) if (b.offsetParent) jiggle(b.querySelector('svg'), ui.pinned ? 'pinIn' : 'pinOut');
+  send('setPinned', { pinned: ui.pinned }); if (!native) toast('预览模式不支持置顶');
+}
 function toggleMini() {
   closePop();
   if (!native) return onMode({ mini: !ui.mini, pinned: ui.pinned });
@@ -1221,7 +1336,7 @@ window.App = {
   },
   // 供测试脚本使用
   _debug: { get data() { return data; }, set data(v) { data = normalize(v); renderAll(); }, ui, renderAll, createEvent, openEvPop, openSettings, toast, gotoWeek, selectDay, closePop, toggleMini, onMode,
-    today, nowMin, setTz, zoneOffset, zoneItems, undo },
+    today, nowMin, setTz, zoneOffset, zoneItems, undo, goToday, togglePin, blocks },
 };
 
 init();
