@@ -29,7 +29,7 @@ try:
 except ImportError:
     ZoneInfo = None
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 APP_ID = 'io.jian.Notes'
 APP_NAME = '笺'
 ROOT = os.path.dirname(os.path.realpath(__file__))
