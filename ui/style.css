@@ -6,7 +6,8 @@
   --m: 10px;                 /* 窗口阴影留边（与 jian.py 中 MARGIN 一致） */
   --radius: 14px;
   --gutter: 50px;
-  --hour-h: 44px;
+  --hour-h: 44px;            /* 每小时多高：由脚本按窗口高度和缩放算好，总是整数像素 */
+  --half-h: 22px;            /* 半小时线的位置（整数像素） */
   --font: 'LXGW WenKai Screen', 'Noto Serif CJK SC', 'Source Han Serif SC', serif;
 
   --paper: #f5efe3;
@@ -201,11 +202,16 @@ body.switching .frame { opacity: 0; transform: scale(.985); }
 .col {
   position: relative;
   border-left: 1px solid var(--rule-2);
+  transition: background-color .3s;
+}
+/* 小时线 + 半小时线：两层都按“一小时”的整数像素平铺，半小时线只是错开半格。
+   平铺尺寸带小数时浏览器会取整，线就一小时比一小时更偏，和时间标签、日程块对不齐。 */
+.col, .dv-col {
   background-image:
     linear-gradient(var(--rule) 1px, transparent 1px),
     linear-gradient(var(--rule-2) 1px, transparent 1px);
-  background-size: 100% var(--hour-h), 100% calc(var(--hour-h) / 2);
-  transition: background-color .3s;
+  background-size: 100% var(--hour-h);
+  background-position: 0 0, 0 var(--half-h);
 }
 .col.weekend { background-color: var(--wash); }
 .col.today { background-color: color-mix(in srgb, var(--accent) 5%, transparent); }
@@ -421,9 +427,34 @@ body.mini #todo { padding: 8px 12px 10px 16px; }
 body.mini .todo-head { cursor: default; }
 body.mini .mini-btns { display: flex; }
 body.mini .todo-date .big { font-size: 38px; }
-body.mini .seal-done { right: 104px; }
+body.mini .seal-done { right: 148px; top: 7px; width: 40px; height: 40px; font-size: 20px; }   /* 迷你头部挤：小一号，别压住翻页按钮 */
 body.mini .grp-h.ev-link { cursor: default; }
 body.mini .grp-h.ev-link:hover .ttl { text-decoration: none; }
+
+/* 迷你卡片：日程方块视图（只看一天，整段时间铺满，一眼看清） */
+body.mini.dayview .tabs { display: none; }
+.dayview-pane { display: flex; flex-direction: column; }
+.dv-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 0 10px; scrollbar-width: none; }
+.dv-scroll::-webkit-scrollbar { width: 0; height: 0; }
+.dv-body { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr); height: calc(var(--span) * var(--hour-h) + 1px); }
+.dv-col { position: relative; border-left: 1px solid var(--rule-2); border-right: 1px solid var(--rule-2); }
+.dv-col .ev { cursor: pointer; }
+.dv-now { position: absolute; left: 42px; right: 0; top: calc(var(--s) * var(--hour-h) / 60); height: 0; pointer-events: none; z-index: 4; }
+.dv-now::before { content: ''; position: absolute; left: 0; right: 0; top: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+.dv-now::after { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.dv-now .lbl { position: absolute; right: calc(100% + 3px); top: -8px; font-size: 11px; color: var(--accent); background: var(--paper); padding: 0 3px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.dv-gutter .hl.near { opacity: 0; }
+.dv-empty { position: absolute; left: 42px; right: 0; top: 38%; text-align: center; color: var(--ink-3); font-size: 13px; letter-spacing: .06em; pointer-events: none; }
+
+/* Ctrl+滚轮缩放时：暂停日程块和“现在”线的位置过渡，跟手；角落里短暂显示缩放比例 */
+body.zooming .ev, body.zooming .now { transition: none !important; }
+.zoom-tip {
+  position: fixed; z-index: 60; transform: translate(-50%, -4px); opacity: 0; pointer-events: none;
+  padding: 2px 10px; border-radius: 10px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+  background: var(--paper-hi); box-shadow: 0 0 0 1px var(--rule), 0 4px 12px rgba(var(--shadow-c), .12);
+  font-variant-numeric: tabular-nums; transition: opacity .2s, transform .2s var(--ease);
+}
+.zoom-tip.show { opacity: 1; transform: translate(-50%, 0); }
 
 /* —— 浮层：弹出卡片 / 提示 —— */
 #layer { position: fixed; inset: 0; pointer-events: none; z-index: 50; }

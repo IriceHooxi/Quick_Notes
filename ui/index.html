@@ -52,6 +52,7 @@
         <div class="todo-date" id="todoDate"></div>
         <button class="ib" id="nextDay" title="后一天"></button>
         <div class="mini-btns">
+          <button class="ib" id="dayBtn" title="日程方块视图 (D)"></button>
           <button class="ib" id="pinBtn2" title="置顶 (P)"></button>
           <button class="ib" id="expandBtn" title="展开周视图 (M)"></button>
           <button class="ib close" id="closeBtn2" title="隐藏到后台 (Esc)"></button>
@@ -68,6 +69,16 @@
       <div class="panes">
         <div class="pane todo-body" id="todoBody"></div>
         <div class="pane off" id="memoPane"><textarea class="memo" id="memo" placeholder="随手记点什么……灵感、电话、待买的东西" spellcheck="false"></textarea></div>
+        <div class="pane off dayview-pane" id="dayView">
+          <div class="dv-scroll" id="dvScroll">
+            <div class="dv-body" id="dvBody">
+              <div class="gutter dv-gutter" id="dvGutter"></div>
+              <div class="dv-col" id="dvCol"></div>
+              <div class="dv-now" id="dvNow" hidden><span class="lbl"></span></div>
+            </div>
+          </div>
+          <div class="dv-empty" id="dvEmpty" hidden>这一天还没有日程</div>
+        </div>
       </div>
     </aside>
   </main>
@@ -75,6 +86,7 @@
 
 <div id="layer"></div>
 <div id="fx" aria-hidden="true"></div>
+<div class="zoom-tip" id="zoomTip" aria-hidden="true"></div>
 <div class="toasts" id="toasts"></div>
 <div class="edge n"></div><div class="edge s"></div><div class="edge w"></div><div class="edge e"></div>
 <div class="edge nw"></div><div class="edge ne"></div><div class="edge sw"></div><div class="edge se"></div>

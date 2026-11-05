@@ -85,6 +85,7 @@ const I = {
   x: '<svg viewBox="0 0 24 24"><path d="M7.5 7.5l9 9M16.5 7.5l-9 9"/></svg>',
   plus: '<svg viewBox="0 0 24 24"><path d="M12.3 5.6c-.4 4.3-.3 8.6.1 12.9M5.7 12.2c4.2.3 8.5.2 12.7-.3"/></svg>',
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 12.2h13M13.5 7.5l4.8 4.7-4.8 4.8"/></svg>',
+  day: '<svg viewBox="0 0 24 24"><path d="M5 4.5v15M5 8h1.8M5 12h1.8M5 16h1.8"/><rect x="9.3" y="5.3" width="10" height="5.4" rx="1.6"/><rect x="9.3" y="13.1" width="10" height="6" rx="1.6"/></svg>',
 };
 const BOX = '<svg viewBox="0 0 22 22"><path class="box" d="M4.3 5.2c3.9-.7 9.4-.6 13.3-.2.5 3.9.4 8.3-.1 12.3-4 .5-9 .4-13 .1-.5-4-.5-8.2-.2-12.2z"/><path class="tick" d="M6.4 11.4c1.4 1.1 2.5 2.5 3.5 4 2.2-4.3 5.4-8.2 9.8-11.8"/></svg>';
 const RING = '<svg class="ring" viewBox="0 0 50 40"><path d="M27 5.2c-9.8-.9-20.3 4.4-21.4 13.1-1.1 9 8.3 16.3 19.6 16.4 10.9.1 19.9-5.7 19.8-14.2-.1-8.6-9.3-15-20.4-15-3.5.1-6.5.8-9.1 2.2"/></svg>';
@@ -95,7 +96,7 @@ const HILLS = '<svg viewBox="0 0 64 44"><path d="M7 33c5-1 9-5 13-10 3-4 6-9 10-
 const COLORS = [['dai', '黛'], ['zhu', '朱'], ['tai', '苔'], ['zhe', '赭'], ['zi', '紫'], ['qing', '青'], ['mo', '墨']];
 const REPEATS = [['none', '不重复'], ['daily', '每天'], ['workdays', '工作日'], ['weekly', '每周']];
 const THEMES = [['xuan', '宣纸', '#f5efe3'], ['kraft', '牛皮', '#e6d4b4'], ['moon', '月白', '#f1f2ee'], ['ink', '夜墨', '#2a2723']];
-const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system' };
+const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system', miniView: 'list' };   // miniView：迷你卡片看待办列表还是日程方块
 const BOOT = window.__BOOT__ || {};
 const tzOK = BOOT.zones !== false;   // 原生层（Python）能不能按时区提醒；不能就只跟随系统
 
@@ -112,6 +113,7 @@ function normalize(d) {
     .map(t => ({ eventId: null, done: false, order: 0, ...t }));
   const settings = { ...DEF, ...(d.settings || {}) };
   if (settings.tz !== 'system' && !(tzOK && validTz(settings.tz))) settings.tz = 'system';
+  if (settings.miniView !== 'day') settings.miniView = 'list';
   return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', colorIdx: d.colorIdx | 0 };
 }
 function loadLocal() { try { return JSON.parse(localStorage.getItem('jian-data')); } catch { return null; } }
@@ -124,6 +126,7 @@ const ui = {
   hourH: 44,
   mini: !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,
   tab: 'todo',
+  dayView: data.settings.miniView === 'day',   // 迷你卡片当前显示日程方块视图（只在迷你模式下生效）
 };
 
 // 保存（防抖）与撤销（整份快照，数据很小）
@@ -326,13 +329,114 @@ function buildGrid() {
   }
   $('#gutter').innerHTML = Array.from({ length: 24 }, (_, i) => i ? `<span class="hl" style="--h:${i}">${pad(i)}:00</span>` : '').join('');
 }
+// 每小时多高：先按“一屏显示”的时段铺满（fit），再乘上 Ctrl+滚轮的缩放倍数。
+// 结果一律取整数像素：网格线是按小时平铺的背景，高度带小数时浏览器会把平铺取整，线就越往下越歪。
+function weekRange() {
+  const H = scroller.clientHeight; if (!H) return null;
+  const span = Math.max(4, data.settings.dayEnd - data.settings.dayStart), fit = clamp((H - 10) / span, 26, 140);
+  return { fit, lo: Math.min(Math.floor(fit), Math.max(14, Math.floor((H - 10) / 24))), hi: 160 };   // 缩到最小正好一屏放下整天
+}
+function setHourH(box, hh) { box.style.setProperty('--hour-h', hh + 'px'); box.style.setProperty('--half-h', (hh >> 1) + 'px'); }
 function fitHours(keep) {
-  const H = scroller.clientHeight; if (!H) return;
-  const span = Math.max(4, data.settings.dayEnd - data.settings.dayStart);
-  const hh = clamp((H - 10) / span, 26, 140), top = scroller.scrollTop / ui.hourH;
-  ui.hourH = hh;
-  $('#week').style.setProperty('--hour-h', hh + 'px');
+  const R = weekRange(); if (!R) return;
+  const hh = clamp(Math.floor(R.fit * zoom.week.z + 1e-6), R.lo, R.hi), top = scroller.scrollTop / ui.hourH;
+  ui.hourH = hh; setHourH($('#week'), hh);
   scroller.scrollTop = keep ? top * hh : data.settings.dayStart * hh - 10;
+}
+
+// ───────────────────────── 缩放：Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0 ─────────────────────────
+// 周视图和迷你卡片的日程方块视图各有一个缩放倍数（相对“铺满”），本次运行内有效；
+// 滚轮缩放以指针处的时刻为锚点，缩放后那一刻仍停在指针下面。
+const zoom = {
+  week: { z: 1, sc: () => scroller, body: () => $('#gridBody'), range: weekRange, hh: () => ui.hourH,
+    set: hh => { ui.hourH = hh; setHourH($('#week'), hh); renderGrid(true); }, reset: () => { fitHours(false); renderGrid(true); } },
+  day: { z: 1, sc: () => $('#dvScroll'), body: () => $('#dvBody'), range: () => dayRange(), hh: () => dv.hh,
+    set: hh => renderDayView(hh), reset: () => { renderDayView(); $('#dvScroll').scrollTop = 0; } },
+};
+const activeZoom = () => ui.mini ? (ui.dayView ? zoom.day : null) : zoom.week;
+const wheelFactor = e => Math.exp(-clamp(e.deltaMode === 1 ? e.deltaY * 20 : e.deltaMode === 2 ? e.deltaY * 300 : e.deltaY, -60, 60) * .0028);
+let zq = null, zoomT = 0, tipT = 0;
+function zoomBy(v, f, clientY) {   // 同一帧里的多次滚轮合并成一次重排
+  if (zq && zq.v !== v) flushZoom();
+  if (!zq) { zq = { v, f: 1, y: clientY }; requestAnimationFrame(flushZoom); }
+  zq.f *= f; zq.y = clientY;
+}
+function flushZoom() {
+  const q = zq; zq = null; if (!q) return;
+  const v = q.v, R = v.range(); if (!R) return;
+  v.z = clamp(v.z * q.f, R.zmin ?? R.lo / R.fit, R.hi / R.fit);
+  const hh = clamp(Math.floor(R.fit * v.z + 1e-6), R.lo, R.hi), old = v.hh(), sc = v.sc();
+  if (hh !== old) {
+    const r = sc.getBoundingClientRect(), y = q.y == null ? r.height / 2 : clamp(q.y - r.top, 0, r.height);
+    const off = v.body().offsetTop, at = (sc.scrollTop + y - off) / old;   // 指针下是第几个小时（从网格顶端算）
+    zooming();
+    v.set(hh);
+    sc.scrollTop = at * hh + off - y;
+  }
+  zoomTip(sc, v.z);
+}
+function resetZoom(v) { v.z = 1; zooming(); v.reset(); zoomTip(v.sc(), 1); }
+function zooming() {   // 缩放期间暂停日程块和“现在”线的位置过渡，跟手不拖影
+  document.body.classList.add('zooming'); clearTimeout(zoomT);
+  zoomT = setTimeout(() => document.body.classList.remove('zooming'), 200);
+}
+function zoomTip(sc, z) {
+  const t = $('#zoomTip'), r = sc.getBoundingClientRect(), pct = Math.round(z * 100);
+  t.textContent = pct === 100 ? '100%' : `${pct}%　Ctrl+0 还原`;
+  t.style.left = r.left + r.width / 2 + 'px'; t.style.top = r.top + 8 + 'px';
+  t.classList.add('show'); clearTimeout(tipT); tipT = setTimeout(() => t.classList.remove('show'), 1000);
+}
+
+// ───────────────────────── 迷你卡片：日程方块视图 ─────────────────────────
+// 只看一天：“一屏显示”的时段（有日程落在外面就自动放宽）整段铺满，日程是方块，一眼看清这一天怎么排的。
+// 点一个方块：回到待办列表并闪一下这个日程的小任务。
+const dv = { hh: 0, a: 7, b: 23, gk: '', blocks: new Map() };
+function dayRange() {
+  const H = $('#dvScroll').clientHeight - 18; if (H <= 0) return null;   // 18 = 上下留白
+  const fit = Math.max(14, H / (dv.b - dv.a));
+  return { fit, lo: Math.floor(fit), hi: Math.max(Math.floor(fit), 160), zmin: 1 };   // 已经铺满整段，只能放大
+}
+function renderDayView(hh, flip) {
+  if (!(ui.mini && ui.dayView)) return;
+  const ds = ui.sel, td = today(), nm = nowMin(), occs = layoutCols(occsOn(ds)), dayTasks = data.tasks.filter(t => t.date === ds);
+  let a = data.settings.dayStart, b = data.settings.dayEnd;
+  for (const o of occs) { a = Math.min(a, Math.floor(o.start / 60)); b = Math.max(b, Math.ceil(o.end / 60)); }
+  dv.a = a; dv.b = b;
+  if (hh == null) { const R = dayRange(); if (!R) return; hh = clamp(Math.floor(R.fit * zoom.day.z + 1e-6), R.lo, R.hi); }
+  const col = $('#dvCol'), body = $('#dvBody');
+  dv.hh = hh; setHourH($('#dayView'), hh); body.style.setProperty('--span', b - a);
+  const gk = a + '-' + b;
+  if (dv.gk !== gk) { dv.gk = gk; $('#dvGutter').innerHTML = Array.from({ length: b - a + 1 }, (_, i) => `<span class="hl" style="--h:${i}">${pad(a + i)}:00</span>`).join(''); }
+  const view = { hh, colW: col.clientWidth, off: a * 60, grip: false }, seen = new Set();
+  for (const o of occs) {
+    seen.add(o.key);
+    let n = dv.blocks.get(o.key);
+    if (!n) { n = document.createElement('div'); n.className = 'ev'; dv.blocks.set(o.key, n); col.appendChild(n); }
+    fillBlock(n, o, dayTasks, td, nm, view);
+  }
+  for (const [k, n] of dv.blocks) if (!seen.has(k)) { n.remove(); dv.blocks.delete(k); }
+  const now = $('#dvNow'), on = ds === td && nm >= a * 60 && nm <= b * 60;
+  now.hidden = !on;
+  if (on) { now.style.setProperty('--s', nm - a * 60); now.firstChild.textContent = hm(nm); }
+  for (const l of $$('#dvGutter .hl')) l.classList.toggle('near', on && Math.abs((a + +l.style.getPropertyValue('--h')) * 60 - nm) * hh / 60 < 13);
+  $('#dvEmpty').hidden = occs.length > 0;
+  if (flip) body.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
+}
+function syncPanes() {   // 迷你卡片里：日程方块视图 / 待办 / 随记，三选一
+  const on = ui.mini && ui.dayView, btn = $('#dayBtn');
+  document.body.classList.toggle('dayview', on);
+  $('#dayView').classList.toggle('off', !on);
+  $('#todoBody').classList.toggle('off', on || ui.tab !== 'todo');
+  $('#memoPane').classList.toggle('off', on || ui.tab !== 'memo');
+  btn.classList.toggle('on', ui.dayView); btn.title = ui.dayView ? '回到待办列表 (D)' : '日程方块视图 (D)';
+}
+function setDayView(on) {
+  if (ui.dayView === on) return;
+  ui.dayView = on;
+  const mv = on ? 'day' : 'list';
+  if (data.settings.miniView !== mv) { data.settings.miniView = mv; save(); }   // 记住：下次打开迷你卡片还是这个视图
+  syncPanes();
+  if (on) renderDayView(); else moveInd();
 }
 function renderDays() {
   const td = today(), byDate = tasksByDate();
@@ -386,12 +490,13 @@ function renderGrid(instant = false) {
   if (pop && pop.kind === 'ev') blocks.get(pop.key)?.classList.add('active');
   updateNow();
 }
-function fillBlock(b, o, dayTasks, td, nm) {
+// view：哪种视图在画这个块——每小时多高、列多宽、时间从几点算起（off 分钟）、要不要拉伸手柄
+function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW, off: 0, grip: true }) {
   const ev = o.ev, ts = dayTasks.filter(t => t.eventId === ev.id), dn = ts.filter(t => t.done).length;
-  const px = (o.end - o.start) * ui.hourH / 60;
+  const px = (o.end - o.start) * view.hh / 60;
   b.dataset.key = o.key; b.dataset.id = ev.id; b.dataset.date = o.date;
   const st = b.style;
-  st.setProperty('--s', o.start); st.setProperty('--e', o.end);
+  st.setProperty('--s', o.start - view.off); st.setProperty('--e', o.end - view.off);
   st.setProperty('--l', o.col / o.ncol); st.setProperty('--w', 1 / o.ncol);
   st.setProperty('--c', `var(--c-${ev.color || 'dai'})`);
   b.classList.toggle('past', o.date < td || (o.date === td && o.end <= nm));
@@ -399,13 +504,13 @@ function fillBlock(b, o, dayTasks, td, nm) {
   b.classList.toggle('short', px < 38);
   b.classList.toggle('tiny', px < 22);
   // 标题最多占几行：给时间留出位置（窄块里时间可能折成两行）
-  const timeLines = ui.colW / o.ncol < 82 ? 2 : 1;
+  const timeLines = view.colW / o.ncol < 82 ? 2 : 1;
   st.setProperty('--lines', clamp(Math.floor((px - 7 - 15 * timeLines) / 16.5), 1, 4));
   const rep = ev.repeat && ev.repeat !== 'none';
   const html = `<div class="ev-t">${ev.title ? esc(ev.title) : '<span class="ph">未命名</span>'}</div>`
     + `<div class="ev-tm">${hm(o.start)}–${hm(o.end)}${rep ? ' <i class="rep">↻</i>' : ''}</div>`
     + (ts.length ? `<div class="ev-badge${dn === ts.length ? ' all' : ''}">${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}</div>` : '')
-    + '<div class="ev-grip"></div>';
+    + (view.grip ? '<div class="ev-grip"></div>' : '');
   if (b._html !== html) { b.innerHTML = html; b._html = html; }
   b.title = `${ev.title || '未命名'}  ${hm(o.start)}–${hm(o.end)}${rep ? '（重复）' : ''}${ev.note ? '\n' + ev.note : ''}`;
 }
@@ -415,7 +520,8 @@ function updateNow() {
   const m = nowMin();
   nl.hidden = false; nl.style.setProperty('--s', m); nl.style.setProperty('--i', idx);
   $('#nowLbl').textContent = hm(m);
-  for (const l of $$('#gutter .hl')) l.classList.toggle('near', Math.abs(+l.style.getPropertyValue('--h') * 60 - m) < 16);
+  // 离“现在”标签太近的整点标签让位；按像素算，缩放后也合适
+  for (const l of $$('#gutter .hl')) l.classList.toggle('near', Math.abs(+l.style.getPropertyValue('--h') * 60 - m) * ui.hourH / 60 < 13);
 }
 
 // ───────────────────────── 周视图：拖拽创建 / 移动 / 拉伸 ─────────────────────────
@@ -621,10 +727,11 @@ function renderTodo() {
   }
   seal.title = complete ? '这一天的待办全部完成' : '';
   lastComplete = complete;
-  if (dayChanged && lastSel !== null && motion)
-    $('#todoBody').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
+  const flip = dayChanged && lastSel !== null && motion;
+  if (flip) $('#todoBody').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
   lastSel = ds;
   renderNowNext();
+  renderDayView(null, flip);
 }
 function renderNowNext() {
   const box = $('#nownext'), td = today(), occs = occsOn(ui.sel);
@@ -1119,6 +1226,7 @@ function openSettings(page, anchor = $('#settingsBtn')) {
       if (k.startsWith('ds')) s.dayStart = clamp(s.dayStart + v, 0, s.dayEnd - 4);
       else s.dayEnd = clamp(s.dayEnd + v, s.dayStart + 4, 24);
       $('.dsv', p).textContent = `${pad(s.dayStart)}:00`; $('.dev', p).textContent = `${pad(s.dayEnd)}:00`;
+      zoom.week.z = 1;   // 重新选了“一屏显示”的时段：按新时段铺满，缩放归位
       save(); fitHours(false); renderGrid(true);
       return;
     }
@@ -1181,6 +1289,7 @@ function flashGroup(key) {
   g.classList.remove('flash'); void g.offsetWidth; g.classList.add('flash');
 }
 function newAnytime() {
+  if (ui.mini) setDayView(false);
   setTab('todo');
   const g = $$('.grp', groupsBox).find(n => n.dataset.k === 'any@' + ui.sel); if (!g) return;
   g.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -1189,8 +1298,7 @@ function newAnytime() {
 function setTab(tab) {
   ui.tab = tab;
   for (const b of $$('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
-  $('#todoBody').classList.toggle('off', tab !== 'todo');
-  $('#memoPane').classList.toggle('off', tab !== 'memo');
+  syncPanes();
   moveInd();
   if (tab === 'memo') setTimeout(() => $('#memo').focus(), 60);
 }
@@ -1218,10 +1326,10 @@ function onMode(st) {
   ui.mini = !!st.mini; ui.pinned = !!st.pinned;
   document.body.classList.toggle('mini', ui.mini);
   $('#todoHead').toggleAttribute('data-drag', ui.mini);
-  updatePinBtns(); renderAll();
+  syncPanes(); updatePinBtns(); renderAll();
   requestAnimationFrame(() => {
     document.body.classList.remove('switching');
-    fitHours(false); renderGrid(true); moveInd(); reportDragSoon();
+    fitHours(false); renderGrid(true); renderDayView(); moveInd(); reportDragSoon();
   });
 }
 function onWindowState(st) {
@@ -1269,6 +1377,12 @@ document.addEventListener('keydown', e => {
   if (e.ctrlKey && k === 'q') { e.preventDefault(); send('quit'); return; }
   if (e.ctrlKey && k === 'w') { e.preventDefault(); send('hide'); return; }
   if (e.ctrlKey && !e.shiftKey && k === 'z' && !typing) { e.preventDefault(); undo(); return; }
+  if (e.ctrlKey && !e.altKey && (k === '=' || k === '+' || k === '-' || k === '0')) {   // 缩放：放大 / 缩小 / 还原
+    const v = activeZoom(); if (!v) return;
+    e.preventDefault();
+    if (k === '0') resetZoom(v); else zoomBy(v, k === '-' ? 1 / 1.15 : 1.15, null);
+    return;
+  }
   if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
   switch (k) {
     case 'ArrowLeft': ui.mini ? selectDay(shift(ui.sel, -1)) : gotoWeek(addDays(ui.week, -7)); break;
@@ -1279,6 +1393,7 @@ document.addEventListener('keydown', e => {
     case 'n': newAnytime(); break;
     case 'm': toggleMini(); break;
     case 'p': togglePin(); break;
+    case 'd': if (!ui.mini) return; setDayView(!ui.dayView); break;
     default: return;
   }
   e.preventDefault();
@@ -1289,13 +1404,13 @@ function renderAll() { renderHeader(); renderDays(); renderGrid(); renderTodo();
 
 function init() {
   const icons = { prevWeek: I.left, nextWeek: I.right, settingsBtn: I.set, pinBtn: I.pin, miniBtn: I.mini, minBtn: I.min, closeBtn: I.close,
-    prevDay: I.left, nextDay: I.right, pinBtn2: I.pin, expandBtn: I.expand, closeBtn2: I.close };
+    prevDay: I.left, nextDay: I.right, dayBtn: I.day, pinBtn2: I.pin, expandBtn: I.expand, closeBtn2: I.close };
   for (const [id, svg] of Object.entries(icons)) $('#' + id).innerHTML = svg;
   applyTheme(); buildGrid();
   if (BOOT.opaque) document.body.classList.add('opaque');
   document.body.classList.toggle('mini', ui.mini);
   $('#todoHead').toggleAttribute('data-drag', ui.mini);
-  updatePinBtns();
+  updatePinBtns(); syncPanes();
   $('#memo').value = data.memo;
 
   $('#prevWeek').onclick = () => gotoWeek(addDays(ui.week, -7));
@@ -1311,10 +1426,19 @@ function init() {
   $('#nextDay').onclick = () => selectDay(shift(ui.sel, 1));
   $('#daysHead').addEventListener('click', e => { const h = e.target.closest('.dh'); if (h && h.dataset.date) selectDay(h.dataset.date); });
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
+  $('#dayBtn').onclick = () => setDayView(!ui.dayView);
+  $('#dvCol').addEventListener('click', e => {   // 点日程方块：回到待办列表，闪一下它的小任务
+    const b = e.target.closest('.ev'); if (!b) return;
+    setDayView(false); flashGroup(b.dataset.key);
+  });
+  // Ctrl+滚轮缩放（不加 Ctrl 时照常滚动）
+  $('#week').addEventListener('wheel', e => { if (!e.ctrlKey || !e.deltaY) return; e.preventDefault(); zoomBy(zoom.week, wheelFactor(e), e.clientY); }, { passive: false });
+  $('#dvScroll').addEventListener('wheel', e => { if (!e.ctrlKey || !e.deltaY) return; e.preventDefault(); zoomBy(zoom.day, wheelFactor(e), e.clientY); }, { passive: false });
   $('#memo').addEventListener('input', e => { data.memo = e.target.value; save(); });
 
   renderAll();
   new ResizeObserver(() => { fitHours(true); renderGrid(true); }).observe(scroller);
+  new ResizeObserver(() => renderDayView()).observe($('#dvScroll'));
   addEventListener('resize', () => { moveInd(); reportDragSoon(); if (pop) placePop(pop.el, pop.rect, pop.prefer); });
   requestAnimationFrame(() => { fitHours(false); renderGrid(true); moveInd(); reportDragSoon(); });
   document.fonts && document.fonts.ready.then(() => { moveInd(); reportDragSoon(); });
@@ -1330,13 +1454,14 @@ window.App = {
   setAutostart(on) { ui.autostart = !!on; },
   focus(date, evId) {
     selectDay(date);
-    const key = evId + '@' + date, b = blocks.get(key);
+    const key = evId + '@' + date, b = blocks.get(key), d = ui.mini && ui.dayView && dv.blocks.get(key);
     if (b && !ui.mini) revealBlock(b, findEv(evId)?.start || 0);
-    flashGroup(key);
+    if (d) { d.scrollIntoView({ block: 'nearest' }); d.classList.remove('flash'); void d.offsetWidth; d.classList.add('flash'); }   // 迷你卡片正看方块视图
+    else flashGroup(key);
   },
   // 供测试脚本使用
   _debug: { get data() { return data; }, set data(v) { data = normalize(v); renderAll(); }, ui, renderAll, createEvent, openEvPop, openSettings, toast, gotoWeek, selectDay, closePop, toggleMini, onMode,
-    today, nowMin, setTz, zoneOffset, zoneItems, undo, goToday, togglePin, blocks },
+    today, nowMin, setTz, zoneOffset, zoneItems, undo, goToday, togglePin, blocks, zoom, dv, setDayView, fitHours },
 };
 
 init();
