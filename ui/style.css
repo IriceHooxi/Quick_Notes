@@ -161,8 +161,11 @@ body.switching .frame { opacity: 0; transform: scale(.985); }
 }
 
 /* —— 周视图 —— */
-#week { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; padding: 0 4px 12px 10px; }
-.days-head { display: grid; grid-template-columns: var(--gutter) repeat(7, minmax(0, 1fr)); border-bottom: 1px solid var(--rule); }
+#week { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; padding: 0 4px 12px 10px;
+  --colw: calc((100% - var(--gutter)) / 7);   /* 每列多宽：默认一屏 7 天，横向缩放时由脚本改成像素值 */
+}
+/* 星期栏不自己滚动，scrollLeft 跟着下面的网格走 */
+.days-head { display: grid; grid-template-columns: var(--gutter) repeat(7, var(--colw)); border-bottom: 1px solid var(--rule); overflow: hidden; }
 .dh {
   position: relative; padding: 2px 0 10px; text-align: center; cursor: pointer;
   border-radius: 10px 10px 0 0;
@@ -186,12 +189,21 @@ body.switching .frame { opacity: 0; transform: scale(.985); }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 
 .scroller {
-  position: relative; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+  position: relative; overflow: auto; scrollbar-width: none;
   -webkit-mask-image: linear-gradient(transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  scroll-snap-type: x mandatory; scroll-padding-left: var(--gutter);   /* 少于 7 天时左右滚动，停下对齐到整列 */
 }
+body.hfree .scroller { scroll-snap-type: none; }   /* 缩放动画和拖动途中不吸附 */
 .scroller::-webkit-scrollbar { width: 0; height: 0; }
-.grid-body { position: relative; display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr); height: calc(var(--hour-h) * 24 + 1px); }
-.gutter { position: relative; }
+.grid-body { position: relative; display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr); width: calc(var(--gutter) + 7 * var(--colw)); height: calc(var(--hour-h) * 24 + 1px); }
+/* 时间刻度钉在左边，横向滚动时盖住滚过去的几天；底纹按窗口定位，和纸面接得上 */
+.gutter, .corner {
+  position: sticky; left: 0;
+  background: var(--fiber), var(--grain), var(--paper);
+  background-attachment: fixed; background-position: var(--m) var(--m);
+}
+.gutter { z-index: 7; }
+.corner { z-index: 2; }
 .gutter .hl {
   position: absolute; right: 9px; top: calc(var(--h) * var(--hour-h)); transform: translateY(-50%);
   font-size: 11px; color: var(--ink-3); letter-spacing: .02em; font-variant-numeric: tabular-nums;
@@ -200,7 +212,7 @@ body.switching .frame { opacity: 0; transform: scale(.985); }
 .gutter .hl.near { opacity: 0; }   /* 让位给“现在”标签 */
 .cols { position: relative; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); cursor: cell; touch-action: none; }
 .col {
-  position: relative;
+  position: relative; scroll-snap-align: start;
   border-left: 1px solid var(--rule-2);
   transition: background-color .3s;
 }
@@ -224,7 +236,8 @@ body.switching .frame { opacity: 0; transform: scale(.985); }
 .now .seg { position: absolute; top: -1px; height: 2px; border-radius: 2px; background: var(--accent);
   left: calc((100% / 7) * var(--i)); width: calc(100% / 7); }
 .now .seg::before { content: ''; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-.now .lbl { position: absolute; right: calc(100% + 3px); top: -8px; font-size: 11px; color: var(--accent); background: var(--paper); padding: 0 3px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.now-lbl { position: absolute; right: 3px; top: calc(var(--s) * var(--hour-h) / 60 - 8px); transition: top .6s var(--ease); }   /* 在时间刻度里，横向滚动时不跑 */
+.now-lbl, .dv-now .lbl { font-size: 11px; color: var(--accent); background: var(--paper); padding: 0 3px; border-radius: 4px; font-variant-numeric: tabular-nums; }
 
 /* 日程块 */
 .ev {
@@ -442,12 +455,11 @@ body.mini.dayview .tabs { display: none; }
 .dv-now { position: absolute; left: 42px; right: 0; top: calc(var(--s) * var(--hour-h) / 60); height: 0; pointer-events: none; z-index: 4; }
 .dv-now::before { content: ''; position: absolute; left: 0; right: 0; top: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
 .dv-now::after { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-.dv-now .lbl { position: absolute; right: calc(100% + 3px); top: -8px; font-size: 11px; color: var(--accent); background: var(--paper); padding: 0 3px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.dv-now .lbl { position: absolute; right: calc(100% + 3px); top: -8px; }
 .dv-gutter .hl.near { opacity: 0; }
 .dv-empty { position: absolute; left: 42px; right: 0; top: 38%; text-align: center; color: var(--ink-3); font-size: 13px; letter-spacing: .06em; pointer-events: none; }
 
-/* Ctrl+滚轮缩放时：暂停日程块和“现在”线的位置过渡，跟手；角落里短暂显示缩放比例 */
-body.zooming .ev, body.zooming .now { transition: none !important; }
+/* Ctrl+滚轮横向缩放时，顶上短暂提示一屏显示几天 */
 .zoom-tip {
   position: fixed; z-index: 60; transform: translate(-50%, -4px); opacity: 0; pointer-events: none;
   padding: 2px 10px; border-radius: 10px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
@@ -588,7 +600,6 @@ body.zooming .ev, body.zooming .now { transition: none !important; }
 .tz-note { flex: none; margin: 8px 0 0; padding-top: 8px; border-top: 1px dashed var(--rule); font-size: 11.5px; line-height: 1.6; color: var(--ink-3); }
 
 /* 时间轴左上角：不跟随系统时，标出用的是哪里的时间 */
-.corner { position: relative; }
 .tz-corner {
   position: absolute; left: 0; right: 2px; bottom: 9px;
   display: flex; flex-direction: column; align-items: flex-end;

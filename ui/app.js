@@ -96,7 +96,7 @@ const HILLS = '<svg viewBox="0 0 64 44"><path d="M7 33c5-1 9-5 13-10 3-4 6-9 10-
 const COLORS = [['dai', '黛'], ['zhu', '朱'], ['tai', '苔'], ['zhe', '赭'], ['zi', '紫'], ['qing', '青'], ['mo', '墨']];
 const REPEATS = [['none', '不重复'], ['daily', '每天'], ['workdays', '工作日'], ['weekly', '每周']];
 const THEMES = [['xuan', '宣纸', '#f5efe3'], ['kraft', '牛皮', '#e6d4b4'], ['moon', '月白', '#f1f2ee'], ['ink', '夜墨', '#2a2723']];
-const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system', miniView: 'list' };   // miniView：迷你卡片看待办列表还是日程方块
+const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system', miniView: 'list', days: 7 };   // miniView：迷你卡片看待办列表还是日程方块；days：周视图一屏显示几天
 const BOOT = window.__BOOT__ || {};
 const tzOK = BOOT.zones !== false;   // 原生层（Python）能不能按时区提醒；不能就只跟随系统
 
@@ -114,6 +114,7 @@ function normalize(d) {
   const settings = { ...DEF, ...(d.settings || {}) };
   if (settings.tz !== 'system' && !(tzOK && validTz(settings.tz))) settings.tz = 'system';
   if (settings.miniView !== 'day') settings.miniView = 'list';
+  settings.days = clamp(Math.round(+settings.days) || 7, 1, 7);
   return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', colorIdx: d.colorIdx | 0 };
 }
 function loadLocal() { try { return JSON.parse(localStorage.getItem('jian-data')); } catch { return null; } }
@@ -127,6 +128,7 @@ const ui = {
   mini: !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,
   tab: 'todo',
   dayView: data.settings.miniView === 'day',   // 迷你卡片当前显示日程方块视图（只在迷你模式下生效）
+  days: data.settings.days,                    // 周视图一屏显示几天（1–7）
 };
 
 // 保存（防抖）与撤销（整份快照，数据很小）
@@ -327,83 +329,91 @@ function buildGrid() {
     dh.appendChild(h); headEls.push(h);
     const c = el('<div class="col"></div>'); colsEl.appendChild(c); colEls.push(c);
   }
-  $('#gutter').innerHTML = Array.from({ length: 24 }, (_, i) => i ? `<span class="hl" style="--h:${i}">${pad(i)}:00</span>` : '').join('');
+  $('#gutter').innerHTML = Array.from({ length: 24 }, (_, i) => i ? `<span class="hl" style="--h:${i}">${pad(i)}:00</span>` : '').join('')
+    + '<span class="now-lbl" id="nowLbl" hidden></span>';   // “现在”的钟点放在刻度里，横向滚动时不跑
 }
-// 每小时多高：先按“一屏显示”的时段铺满（fit），再乘上 Ctrl+滚轮的缩放倍数。
-// 结果一律取整数像素：网格线是按小时平铺的背景，高度带小数时浏览器会把平铺取整，线就越往下越歪。
-function weekRange() {
-  const H = scroller.clientHeight; if (!H) return null;
-  const span = Math.max(4, data.settings.dayEnd - data.settings.dayStart), fit = clamp((H - 10) / span, 26, 140);
-  return { fit, lo: Math.min(Math.floor(fit), Math.max(14, Math.floor((H - 10) / 24))), hi: 160 };   // 缩到最小正好一屏放下整天
-}
+// 每小时多高：按“一屏显示”的时段铺满，取整数像素。
+// 网格线是按小时平铺的背景，高度带小数时浏览器会把平铺取整，线就一小时比一小时更偏，和时间标签、日程块对不齐。
 function setHourH(box, hh) { box.style.setProperty('--hour-h', hh + 'px'); box.style.setProperty('--half-h', (hh >> 1) + 'px'); }
 function fitHours(keep) {
-  const R = weekRange(); if (!R) return;
-  const hh = clamp(Math.floor(R.fit * zoom.week.z + 1e-6), R.lo, R.hi), top = scroller.scrollTop / ui.hourH;
+  const H = scroller.clientHeight; if (!H) return;
+  const span = Math.max(4, data.settings.dayEnd - data.settings.dayStart);
+  const hh = Math.floor(clamp((H - 10) / span, 26, 140)), top = scroller.scrollTop / ui.hourH;
   ui.hourH = hh; setHourH($('#week'), hh);
   scroller.scrollTop = keep ? top * hh : data.settings.dayStart * hh - 10;
 }
 
-// ───────────────────────── 缩放：Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0 ─────────────────────────
-// 周视图和迷你卡片的日程方块视图各有一个缩放倍数（相对“铺满”），本次运行内有效；
-// 滚轮缩放以指针处的时刻为锚点，缩放后那一刻仍停在指针下面。
-const zoom = {
-  week: { z: 1, sc: () => scroller, body: () => $('#gridBody'), range: weekRange, hh: () => ui.hourH,
-    set: hh => { ui.hourH = hh; setHourH($('#week'), hh); renderGrid(true); }, reset: () => { fitHours(false); renderGrid(true); } },
-  day: { z: 1, sc: () => $('#dvScroll'), body: () => $('#dvBody'), range: () => dayRange(), hh: () => dv.hh,
-    set: hh => renderDayView(hh), reset: () => { renderDayView(); $('#dvScroll').scrollTop = 0; } },
-};
-const activeZoom = () => ui.mini ? (ui.dayView ? zoom.day : null) : zoom.week;
-const wheelFactor = e => Math.exp(-clamp(e.deltaMode === 1 ? e.deltaY * 20 : e.deltaMode === 2 ? e.deltaY * 300 : e.deltaY, -60, 60) * .0028);
-let zq = null, zoomT = 0, tipT = 0;
-function zoomBy(v, f, clientY) {   // 同一帧里的多次滚轮合并成一次重排
-  if (zq && zq.v !== v) flushZoom();
-  if (!zq) { zq = { v, f: 1, y: clientY }; requestAnimationFrame(flushZoom); }
-  zq.f *= f; zq.y = clientY;
+// ───────────────────────── 横向缩放：一屏显示几天（Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0） ─────────────────────────
+// 一周 7 列始终都在，放大只是让每列变宽：显示 N 天时一屏放 N 列，其余几天左右滚动查看（停下后对齐到整列）。
+// 左侧时间刻度钉住不动，顶部星期栏跟着网格一起横向滚动。显示几天记在设置里。
+let colw = 0, colAnim = 0, tipT = 0;
+const gutW = () => $('#gutter').offsetWidth || 50;
+const firstVis = () => colw ? Math.round(scroller.scrollLeft / colw) : 0;
+const startFor = i => clamp(i - ((ui.days - 1) >> 1), 0, 7 - ui.days);   // 让第 i 天大致居中时，最左边是哪天
+function setColW(w) { colw = w; $('#week').style.setProperty('--colw', w + 'px'); }
+function scrollX(x) { scroller.scrollLeft = x; $('#daysHead').scrollLeft = scroller.scrollLeft; }   // 星期栏同一帧跟上，不等 scroll 事件
+function fitDays(reset) {   // 窗口宽度变了：重算列宽，最左边还是原来那天
+  const W = scroller.clientWidth - gutW(); if (W <= 0) return;
+  const first = reset || !colw ? startFor(diffDays(ymd(ui.week), ui.sel)) : firstVis();
+  cancelAnimationFrame(colAnim); if (!asSlid) document.body.classList.remove('hfree');
+  setColW(W / ui.days); scrollX(clamp(first, 0, 7 - ui.days) * colw);
 }
-function flushZoom() {
-  const q = zq; zq = null; if (!q) return;
-  const v = q.v, R = v.range(); if (!R) return;
-  v.z = clamp(v.z * q.f, R.zmin ?? R.lo / R.fit, R.hi / R.fit);
-  const hh = clamp(Math.floor(R.fit * v.z + 1e-6), R.lo, R.hi), old = v.hh(), sc = v.sc();
-  if (hh !== old) {
-    const r = sc.getBoundingClientRect(), y = q.y == null ? r.height / 2 : clamp(q.y - r.top, 0, r.height);
-    const off = v.body().offsetTop, at = (sc.scrollTop + y - off) / old;   // 指针下是第几个小时（从网格顶端算）
-    zooming();
-    v.set(hh);
-    sc.scrollTop = at * hh + off - y;
+function revealDay(ds, smooth = true) {   // 选中的那天不在眼前时，横向滚过去
+  if (ui.days >= 7 || !colw || !inWeek(ds)) return;
+  const i = diffDays(ymd(ui.week), ds), f = firstVis();
+  const to = i < f ? i : i > f + ui.days - 1 ? i - ui.days + 1 : f;
+  if (to !== f) scroller.scrollTo({ left: to * colw, behavior: smooth && motion ? 'smooth' : 'auto' });
+}
+function setDays(n, clientX) {
+  n = clamp(n, 1, 7);
+  if (n !== ui.days && colw) {
+    const W = scroller.clientWidth - gutW(), from = colw, to = W / n, r = scroller.getBoundingClientRect();
+    const ax = clientX == null ? W / 2 : clamp(clientX - r.left - gutW(), 0, W);   // 锚点：指针在列区里的横向位置
+    const at = (scroller.scrollLeft + ax) / from;                                    // 指针下是第几天（带小数）
+    const l0 = scroller.scrollLeft / from, l1 = clamp(Math.round(at - ax / to), 0, 7 - n);
+    ui.days = n;
+    if (data.settings.days !== n) { data.settings.days = n; save(); }
+    // 列宽和横向位置一起平滑过渡：每帧按当前列宽换算，指针下的那天始终跟着指针
+    cancelAnimationFrame(colAnim); document.body.classList.add('hfree');
+    const t0 = performance.now(), dur = motion ? 260 : 0;
+    const step = now => {
+      const p = dur ? Math.min(1, (now - t0) / dur) : 1, e = 1 - (1 - p) ** 3, w = from + (to - from) * e;
+      setColW(w); scrollX((l0 + (l1 - l0) * e) * w);
+      if (p < 1) colAnim = requestAnimationFrame(step);
+      else { document.body.classList.remove('hfree'); renderGrid(true); }
+    };
+    if (dur) colAnim = requestAnimationFrame(step); else step(t0);
   }
-  zoomTip(sc, v.z);
+  zoomTip(n === 7 ? '一周 7 天' : `显示 ${n} 天　Ctrl+0 回到一周`);
 }
-function resetZoom(v) { v.z = 1; zooming(); v.reset(); zoomTip(v.sc(), 1); }
-function zooming() {   // 缩放期间暂停日程块和“现在”线的位置过渡，跟手不拖影
-  document.body.classList.add('zooming'); clearTimeout(zoomT);
-  zoomT = setTimeout(() => document.body.classList.remove('zooming'), 200);
+let wAcc = 0, wAccT = 0, wLast = 0;
+function wheelStep(e) {   // 滚轮 → 一格一格：鼠标一格直接算一步，触摸板的细碎增量攒够了再算；一次甩动不会一路冲到底
+  const d = e.deltaMode === 1 ? e.deltaY * 20 : e.deltaMode === 2 ? e.deltaY * 300 : e.deltaY;
+  clearTimeout(wAccT); wAccT = setTimeout(() => { wAcc = 0; }, 250);
+  wAcc += d;
+  const now = performance.now();
+  if (Math.abs(wAcc) < 30 || now - wLast < 90) return 0;
+  const s = Math.sign(wAcc); wAcc = 0; wLast = now; return s;
 }
-function zoomTip(sc, z) {
-  const t = $('#zoomTip'), r = sc.getBoundingClientRect(), pct = Math.round(z * 100);
-  t.textContent = pct === 100 ? '100%' : `${pct}%　Ctrl+0 还原`;
-  t.style.left = r.left + r.width / 2 + 'px'; t.style.top = r.top + 8 + 'px';
-  t.classList.add('show'); clearTimeout(tipT); tipT = setTimeout(() => t.classList.remove('show'), 1000);
+function zoomTip(text) {
+  const t = $('#zoomTip'), r = scroller.getBoundingClientRect();
+  t.textContent = text;
+  t.style.left = r.left + gutW() + (r.width - gutW()) / 2 + 'px'; t.style.top = r.top + 8 + 'px';
+  t.classList.add('show'); clearTimeout(tipT); tipT = setTimeout(() => t.classList.remove('show'), 1100);
 }
 
 // ───────────────────────── 迷你卡片：日程方块视图 ─────────────────────────
 // 只看一天：“一屏显示”的时段（有日程落在外面就自动放宽）整段铺满，日程是方块，一眼看清这一天怎么排的。
 // 点一个方块：回到待办列表并闪一下这个日程的小任务。
 const dv = { hh: 0, a: 7, b: 23, gk: '', blocks: new Map() };
-function dayRange() {
-  const H = $('#dvScroll').clientHeight - 18; if (H <= 0) return null;   // 18 = 上下留白
-  const fit = Math.max(14, H / (dv.b - dv.a));
-  return { fit, lo: Math.floor(fit), hi: Math.max(Math.floor(fit), 160), zmin: 1 };   // 已经铺满整段，只能放大
-}
-function renderDayView(hh, flip) {
+function renderDayView(flip) {
   if (!(ui.mini && ui.dayView)) return;
   const ds = ui.sel, td = today(), nm = nowMin(), occs = layoutCols(occsOn(ds)), dayTasks = data.tasks.filter(t => t.date === ds);
   let a = data.settings.dayStart, b = data.settings.dayEnd;
   for (const o of occs) { a = Math.min(a, Math.floor(o.start / 60)); b = Math.max(b, Math.ceil(o.end / 60)); }
   dv.a = a; dv.b = b;
-  if (hh == null) { const R = dayRange(); if (!R) return; hh = clamp(Math.floor(R.fit * zoom.day.z + 1e-6), R.lo, R.hi); }
-  const col = $('#dvCol'), body = $('#dvBody');
+  const H = $('#dvScroll').clientHeight - 18; if (H <= 0) return;   // 18 = 上下留白
+  const hh = Math.floor(Math.max(14, H / (b - a))), col = $('#dvCol'), body = $('#dvBody');   // 整数像素，理由同周视图
   dv.hh = hh; setHourH($('#dayView'), hh); body.style.setProperty('--span', b - a);
   const gk = a + '-' + b;
   if (dv.gk !== gk) { dv.gk = gk; $('#dvGutter').innerHTML = Array.from({ length: b - a + 1 }, (_, i) => `<span class="hl" style="--h:${i}">${pad(a + i)}:00</span>`).join(''); }
@@ -516,10 +526,11 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
 }
 function updateNow() {
   const idx = diffDays(ymd(ui.week), today()), nl = $('#nowLine');
-  if (idx < 0 || idx > 6) { nl.hidden = true; return; }
+  const lb = $('#nowLbl');
+  if (idx < 0 || idx > 6) { nl.hidden = lb.hidden = true; return; }
   const m = nowMin();
-  nl.hidden = false; nl.style.setProperty('--s', m); nl.style.setProperty('--i', idx);
-  $('#nowLbl').textContent = hm(m);
+  nl.hidden = lb.hidden = false; nl.style.setProperty('--s', m); nl.style.setProperty('--i', idx);
+  lb.style.setProperty('--s', m); lb.textContent = hm(m);
   // 离“现在”标签太近的整点标签让位；按像素算，缩放后也合适
   for (const l of $$('#gutter .hl')) l.classList.toggle('near', Math.abs(+l.style.getPropertyValue('--h') * 60 - m) * ui.hourH / 60 < 13);
 }
@@ -528,7 +539,10 @@ function updateNow() {
 let drag = null, downClosedPop = false, closedKind = null;
 const minAt = y => (y - $('#gridBody').getBoundingClientRect().top) / ui.hourH * 60;
 const colW = () => colsEl.getBoundingClientRect().width / 7;
-const dayAt = x => clamp(Math.floor((x - colsEl.getBoundingClientRect().left) / colW()), 0, 6);
+const dayAt = x => {   // 指针压在左边时间刻度上（下面是滚出去的那天）时，算作最左边看得见的那天
+  const r = scroller.getBoundingClientRect(); x = clamp(x, r.left + gutW(), r.right - 1);
+  return clamp(Math.floor((x - colsEl.getBoundingClientRect().left) / colW()), 0, 6);
+};
 const snap15 = m => Math.round(m / 15) * 15;
 const floorTo = (m, s) => Math.floor(m / s) * s;
 
@@ -552,7 +566,7 @@ colsEl.addEventListener('pointerdown', e => {
 });
 colsEl.addEventListener('pointermove', e => {
   if (!drag || e.pointerId !== drag.pid) return;
-  drag.x = e.clientX; drag.y = e.clientY; dragMove(); autoScroll(e.clientY);
+  drag.x = e.clientX; drag.y = e.clientY; dragMove(); autoScroll(e.clientX, e.clientY);
 });
 colsEl.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pid) dragEnd(); });
 colsEl.addEventListener('pointercancel', () => { if (drag) dragCancel(); });
@@ -593,17 +607,27 @@ function dragMove() {
   if (tm) tm.textContent = (d.day !== d.day0 ? `周${WD[addDays(ui.week, d.day).getDay()]} ` : '') + `${hm(d.start)}–${hm(d.end)}`;
   d.b._html = null;
 }
-let asV = 0, asRAF = 0;
-function autoScroll(y) {
-  const r = scroller.getBoundingClientRect(), z = 34;
+let asV = 0, asH = 0, asRAF = 0, asSlid = false;
+function autoScroll(x, y) {   // 拖到上下边缘：上下滚；只显示几天时拖到左右边缘：滚到相邻的日子
+  const r = scroller.getBoundingClientRect(), z = 34, L = r.left + gutW();
   asV = y < r.top + z ? -Math.ceil((r.top + z - y) / 3) : y > r.bottom - z ? Math.ceil((y - r.bottom + z) / 3) : 0;
-  if (asV && !asRAF) {
-    const step = () => { if (!asV || !drag) { asRAF = 0; return; } scroller.scrollTop += asV; dragMove(); asRAF = requestAnimationFrame(step); };
+  asH = ui.days >= 7 ? 0 : x < L + z ? -Math.ceil((L + z - x) / 3) : x > r.right - z ? Math.ceil((x - r.right + z) / 3) : 0;
+  if (asH && !asSlid) { asSlid = true; document.body.classList.add('hfree'); }
+  if ((asV || asH) && !asRAF) {
+    const step = () => {
+      if (!(asV || asH) || !drag) { asRAF = 0; return; }
+      scroller.scrollTop += asV; scroller.scrollLeft += asH; dragMove(); asRAF = requestAnimationFrame(step);
+    };
     asRAF = requestAnimationFrame(step);
   }
 }
+function snapBack() {   // 拖动带着横向滚了一段：松手后对齐到整列
+  if (!asSlid) return;
+  asSlid = false; document.body.classList.remove('hfree');
+  if (colw) scroller.scrollTo({ left: clamp(firstVis(), 0, 7 - ui.days) * colw, behavior: motion ? 'smooth' : 'auto' });
+}
 function dragEnd() {
-  const d = drag; drag = null; asV = 0;
+  const d = drag; drag = null; asV = asH = 0; snapBack();
   try { colsEl.releasePointerCapture(d.pid); } catch {}
   if (d.kind === 'create') {
     if (d.g) fadeAway(d.g);   // 划出的虚线框淡去，新日程的墨色同时注满
@@ -625,7 +649,7 @@ function dragEnd() {
     ], () => dragRevert(d));
   } else applyMove(d, newDate, 'single');
 }
-function dragCancel() { const d = drag; drag = null; asV = 0; if (d.g) d.g.remove(); if (d.b) dragRevert(d); }
+function dragCancel() { const d = drag; drag = null; asV = asH = 0; snapBack(); if (d.g) d.g.remove(); if (d.b) dragRevert(d); }
 function dragRevert(d) {
   d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._html = null; land(d.b); renderGrid(true);
   if (pop) pop.el.classList.remove('dim');
@@ -731,7 +755,7 @@ function renderTodo() {
   if (flip) $('#todoBody').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
   lastSel = ds;
   renderNowNext();
-  renderDayView(null, flip);
+  renderDayView(flip);
 }
 function renderNowNext() {
   const box = $('#nownext'), td = today(), occs = occsOn(ui.sel);
@@ -1226,7 +1250,6 @@ function openSettings(page, anchor = $('#settingsBtn')) {
       if (k.startsWith('ds')) s.dayStart = clamp(s.dayStart + v, 0, s.dayEnd - 4);
       else s.dayEnd = clamp(s.dayEnd + v, s.dayStart + 4, 24);
       $('.dsv', p).textContent = `${pad(s.dayStart)}:00`; $('.dev', p).textContent = `${pad(s.dayEnd)}:00`;
-      zoom.week.z = 1;   // 重新选了“一屏显示”的时段：按新时段铺满，缩放归位
       save(); fitHours(false); renderGrid(true);
       return;
     }
@@ -1264,13 +1287,14 @@ function gotoWeek(mon, slide = true) {
   if (!inWeek(ui.sel)) { const td = today(); ui.sel = inWeek(td) ? td : shift(ymd(mon), (parse(ui.sel).getDay() + 6) % 7); }
   closePop();
   renderHeader(); renderDays(); renderGrid(true); renderTodo();
+  if (ui.days < 7 && colw) scrollX(startFor(diffDays(ymd(mon), ui.sel)) * colw);   // 翻到的那周：选中那天放在眼前
   if (slide && motion) for (const n of [colsEl, $('#daysHead')])
     n.animate([{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
 }
 function selectDay(ds) {
   if (!inWeek(ds)) { ui.sel = ds; gotoWeek(mondayOf(parse(ds))); return; }
-  if (ui.sel === ds) return;
-  ui.sel = ds; renderHeader(); renderDays(); renderTodo();
+  if (ui.sel === ds) return revealDay(ds);
+  ui.sel = ds; renderHeader(); renderDays(); renderTodo(); revealDay(ds);
 }
 function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(thisMonday()); } else selectDay(td); scrollToNow(); pingNow(); }
 function scrollToNow() {
@@ -1329,7 +1353,7 @@ function onMode(st) {
   syncPanes(); updatePinBtns(); renderAll();
   requestAnimationFrame(() => {
     document.body.classList.remove('switching');
-    fitHours(false); renderGrid(true); renderDayView(); moveInd(); reportDragSoon();
+    fitHours(false); fitDays(true); renderGrid(true); renderDayView(); moveInd(); reportDragSoon();
   });
 }
 function onWindowState(st) {
@@ -1377,10 +1401,9 @@ document.addEventListener('keydown', e => {
   if (e.ctrlKey && k === 'q') { e.preventDefault(); send('quit'); return; }
   if (e.ctrlKey && k === 'w') { e.preventDefault(); send('hide'); return; }
   if (e.ctrlKey && !e.shiftKey && k === 'z' && !typing) { e.preventDefault(); undo(); return; }
-  if (e.ctrlKey && !e.altKey && (k === '=' || k === '+' || k === '-' || k === '0')) {   // 缩放：放大 / 缩小 / 还原
-    const v = activeZoom(); if (!v) return;
+  if (e.ctrlKey && !e.altKey && !ui.mini && (k === '=' || k === '+' || k === '-' || k === '0')) {   // 一屏显示几天：放大 / 缩小 / 回到一周
     e.preventDefault();
-    if (k === '0') resetZoom(v); else zoomBy(v, k === '-' ? 1 / 1.15 : 1.15, null);
+    setDays(k === '0' ? 7 : ui.days + (k === '-' ? 1 : -1));
     return;
   }
   if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
@@ -1431,16 +1454,26 @@ function init() {
     const b = e.target.closest('.ev'); if (!b) return;
     setDayView(false); flashGroup(b.dataset.key);
   });
-  // Ctrl+滚轮缩放（不加 Ctrl 时照常滚动）
-  $('#week').addEventListener('wheel', e => { if (!e.ctrlKey || !e.deltaY) return; e.preventDefault(); zoomBy(zoom.week, wheelFactor(e), e.clientY); }, { passive: false });
-  $('#dvScroll').addEventListener('wheel', e => { if (!e.ctrlKey || !e.deltaY) return; e.preventDefault(); zoomBy(zoom.day, wheelFactor(e), e.clientY); }, { passive: false });
+  // Ctrl+滚轮：往上滚放大（少显示一天），往下滚缩小（多显示一天）；不按 Ctrl 照常上下滚
+  $('#week').addEventListener('wheel', e => {
+    if (!e.ctrlKey || !e.deltaY) return;
+    e.preventDefault();
+    const s = wheelStep(e); if (s) setDays(ui.days + s, e.clientX);
+  }, { passive: false });
+  // 放大后在顶部星期栏上滚滚轮：左右翻看其他几天
+  $('#daysHead').addEventListener('wheel', e => {
+    if (e.ctrlKey || ui.days >= 7 || !e.deltaY) return;
+    e.preventDefault();
+    const s = wheelStep(e); if (s) scroller.scrollTo({ left: clamp(firstVis() + s, 0, 7 - ui.days) * colw, behavior: motion ? 'smooth' : 'auto' });
+  }, { passive: false });
+  scroller.addEventListener('scroll', () => { $('#daysHead').scrollLeft = scroller.scrollLeft; }, { passive: true });
   $('#memo').addEventListener('input', e => { data.memo = e.target.value; save(); });
 
   renderAll();
-  new ResizeObserver(() => { fitHours(true); renderGrid(true); }).observe(scroller);
+  new ResizeObserver(() => { fitHours(true); fitDays(); renderGrid(true); }).observe(scroller);
   new ResizeObserver(() => renderDayView()).observe($('#dvScroll'));
   addEventListener('resize', () => { moveInd(); reportDragSoon(); if (pop) placePop(pop.el, pop.rect, pop.prefer); });
-  requestAnimationFrame(() => { fitHours(false); renderGrid(true); moveInd(); reportDragSoon(); });
+  requestAnimationFrame(() => { fitHours(false); fitDays(true); renderGrid(true); moveInd(); reportDragSoon(); });
   document.fonts && document.fonts.ready.then(() => { moveInd(); reportDragSoon(); });
   setTimeout(() => { tick(); setInterval(tick, 60000); }, 60300 - Date.now() % 60000);
   if (motion) $('#frame').animate([{ opacity: 0, transform: 'translateY(10px) scale(.99)' }, { opacity: 1, transform: 'none' }], { duration: 460, easing: EASE });
@@ -1461,7 +1494,7 @@ window.App = {
   },
   // 供测试脚本使用
   _debug: { get data() { return data; }, set data(v) { data = normalize(v); renderAll(); }, ui, renderAll, createEvent, openEvPop, openSettings, toast, gotoWeek, selectDay, closePop, toggleMini, onMode,
-    today, nowMin, setTz, zoneOffset, zoneItems, undo, goToday, togglePin, blocks, zoom, dv, setDayView, fitHours },
+    today, nowMin, setTz, zoneOffset, zoneItems, undo, goToday, togglePin, blocks, dv, setDayView, fitHours, setDays, shift, addDays, get colw() { return colw; } },
 };
 
 init();
