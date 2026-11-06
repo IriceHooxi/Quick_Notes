@@ -5,6 +5,11 @@
   · POST /api/sync   合并一份设备上的数据并返回合并结果（规则见 syncmerge.py）
   · POST /api/login  用同步密码换一个设备令牌
   · GET  /api/ping   连通性检查
+  · 手机提醒（Web Push，需要 python3-cryptography，没有也不影响同步）：
+      GET  /api/push/key   服务器的推送公钥
+      POST /api/push       手机登记推送订阅和它的提醒设置（提前几分钟、时区）
+      POST /api/push/off   取消订阅；POST /api/push/test 发一条测试通知
+    到点由后台线程发推送，规则和桌面端提醒一样（见 jian.py 的 Reminder）
 
 用法：
   jian_sync.py serve  --state DIR --web DIR [--port 8443] [--cert F --key F | --plain]
@@ -12,7 +17,8 @@
   jian_sync.py token  --state DIR 名称             新建一个设备令牌并打印（给桌面端用）
   jian_sync.py tokens --state DIR                  列出设备
   jian_sync.py revoke --state DIR 名称             注销某台设备
-状态目录里：doc.json（同步数据）、auth.json（密码哈希与令牌哈希）、backups/（每天一份，保留 30 天）。
+状态目录里：doc.json（同步数据）、auth.json（密码哈希与令牌哈希）、backups/（每天一份，保留 30 天）、
+push.json（推送订阅）、vapid.pem（推送签名密钥）。
 """
 import argparse
 import collections
@@ -30,6 +36,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from zoneinfo import ZoneInfo
 
 _here = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [_here, os.path.dirname(_here)]   # 部署时 syncmerge.py 放在同目录；在仓库里则在上一级
@@ -196,6 +203,156 @@ class Auth:
             return n - len(self.a['tokens'])
 
 
+# ───────────────────────── 手机提醒（Web Push） ─────────────────────────
+def hm(m):
+    return f'{m // 60:02d}:{m % 60:02d}'
+
+
+class Push:
+    """各手机的推送订阅（连同它在设置里选的提前几分钟、用的时区）存在 push.json。
+    后台线程每 20 秒看一眼接下来的日程，到点给订阅了的手机发推送。设备被注销后，它的订阅一并作废。"""
+    MAX_SUBS = 20
+
+    def __init__(self, state, store, auth):
+        self.path = os.path.join(state, 'push.json')
+        self.store, self.auth = store, auth
+        self.lock = threading.Lock()
+        p = read_json(self.path, {})
+        self.subs = [s for s in p.get('subs', []) if isinstance(s, dict) and isinstance(s.get('endpoint'), str)]
+        self.sent = {k: v for k, v in (p.get('sent') or {}).items() if isinstance(v, (int, float))}
+        try:
+            import webpush
+            self.wp = webpush
+            self.vapid = webpush.Vapid(os.path.join(state, 'vapid.pem'))
+        except ImportError:
+            self.wp = self.vapid = None
+            log('没有 python3-cryptography：手机提醒不可用（同步不受影响）')
+
+    def _save(self):   # 调用方持有 self.lock
+        write_json(self.path, {'subs': self.subs, 'sent': self.sent})
+
+    def key(self):
+        return self.vapid.pub if self.vapid else None
+
+    def upsert(self, tok, body):
+        """手机登记（或更新）订阅和提醒设置；同一个推送地址只留一份。出错时返回说明。"""
+        sub = body.get('sub') if isinstance(body, dict) else None
+        if not isinstance(sub, dict):
+            return '缺少订阅信息'
+        ep, keys = sub.get('endpoint'), sub.get('keys') if isinstance(sub.get('keys'), dict) else {}
+        if not isinstance(ep, str) or len(ep) > 1000 or not self.wp.allowed(ep):
+            return '不认识的推送服务'
+        try:
+            if len(self.wp.unb64u(keys['p256dh'])) != 65 or len(self.wp.unb64u(keys['auth'])) < 16:
+                raise ValueError
+        except Exception:
+            return '订阅格式不对'
+        remind = body.get('remind')
+        remind = int(remind) if isinstance(remind, (int, float)) and 0 <= remind <= 120 else 10
+        tz = body.get('tz') if isinstance(body.get('tz'), str) else 'UTC'
+        try:
+            ZoneInfo(tz)
+        except Exception:
+            tz = 'UTC'
+        rec = {'endpoint': ep, 'p256dh': keys['p256dh'], 'auth': keys['auth'], 'remind': remind, 'tz': tz,
+               'tok': tok, 'at': int(time.time())}
+        with self.lock:
+            self.subs = ([s for s in self.subs if s['endpoint'] != ep] + [rec])[-self.MAX_SUBS:]
+            self._save()
+        return None
+
+    def remove(self, endpoints):
+        with self.lock:
+            n = len(self.subs)
+            self.subs = [s for s in self.subs if s['endpoint'] not in endpoints]
+            if len(self.subs) != n:
+                self._save()
+
+    def find(self, ep, tok):
+        with self.lock:
+            return next((s for s in self.subs if s['endpoint'] == ep and s.get('tok') == tok), None)
+
+    def send(self, sub, payload, ttl=600, topic=None):
+        status, info = self.wp.send(self.vapid, sub, payload, ttl=ttl, topic=topic)
+        if not 200 <= status < 300:
+            log(f'推送失败 {urllib.parse.urlsplit(sub["endpoint"]).hostname} {status} {info[:160]}')
+        if status in (404, 410):   # 手机上取消了订阅、删了 App，或订阅过期
+            self.remove({sub['endpoint']})
+        return status, info
+
+    def due(self, doc, sub, now):
+        """这个订阅现在该提醒哪些日程：[(去重键, 开始时刻, 通知内容)]。和桌面端 Reminder 同一套规则。"""
+        tz, lead = ZoneInfo(sub['tz']), sub['remind']
+        today = datetime.datetime.fromtimestamp(now, tz).date()
+        tag = hashlib.sha256(sub['endpoint'].encode()).hexdigest()[:10]
+        out = []
+        for d in (today, today + datetime.timedelta(days=1)):
+            for ev in doc['events']:
+                if ev.get('remind') is False or not syncmerge.occurs_on(ev, d):
+                    continue
+                try:
+                    s, e = int(ev.get('start', 0)), int(ev.get('end', 0))
+                except (TypeError, ValueError):
+                    continue
+                wall = datetime.datetime.combine(d, datetime.time()) + datetime.timedelta(minutes=s)
+                start = wall.replace(tzinfo=tz).timestamp()
+                key = f'{tag}|{ev["id"]}@{d}@{s}'
+                if not (start - lead * 60 <= now < start) or key in self.sent:
+                    continue
+                left = max(1, round((start - now) / 60))
+                todo = [t for t in doc['tasks'] if t.get('eventId') == ev['id'] and t.get('date') == d.isoformat()
+                        and not t.get('done')]
+                body = f'{left} 分钟后开始 · {hm(s)}–{hm(e)}'
+                if todo:
+                    body += '\n' + '\n'.join('☐ ' + str(t.get('text', ''))[:60] for t in todo[:4])
+                    if len(todo) > 4:
+                        body += f'\n…… 还有 {len(todo) - 4} 项'
+                out.append((key, start, {'title': str(ev.get('title') or '未命名日程')[:80], 'body': body,
+                                         'date': d.isoformat(), 'id': ev['id'], 'tag': f'{ev["id"]}@{d}'}))
+        return out
+
+    def tick(self, now=None):
+        if not self.vapid:
+            return
+        now = time.time() if now is None else now
+        doc = self.store.doc
+        valid = {t['h'][:16] for t in self.auth.tokens()}
+        with self.lock:
+            subs = list(self.subs)
+        gone = {s['endpoint'] for s in subs if s.get('tok') not in valid}   # 设备已注销
+        dirty = False
+        for sub in subs:
+            if sub['endpoint'] in gone or sub.get('remind', 0) <= 0:
+                continue
+            for key, start, payload in self.due(doc, sub, now):
+                topic = hashlib.sha256(payload['tag'].encode()).hexdigest()[:32]
+                status, _ = self.send(sub, payload, ttl=max(60, start - now), topic=topic)
+                if status in (404, 410):
+                    break
+                if status and status < 500 and status != 429:   # 网络不通、对方忙：下一轮（20 秒后）再试
+                    with self.lock:
+                        self.sent[key] = now
+                    dirty = True
+        with self.lock:
+            cut = now - 2 * 86400
+            old = len(self.sent)
+            self.sent = {k: v for k, v in self.sent.items() if v >= cut}
+            n = len(self.subs)
+            self.subs = [s for s in self.subs if s['endpoint'] not in gone]
+            if len(self.subs) != n:
+                log(f'清掉了 {n - len(self.subs)} 个已注销设备的推送订阅')
+            if dirty or len(self.sent) != old or len(self.subs) != n:
+                self._save()
+
+    def run(self):
+        while True:
+            time.sleep(20 - time.time() % 20 + 0.5)
+            try:
+                self.tick()
+            except Exception as e:
+                log('提醒检查出错', repr(e)[:200])
+
+
 # ───────────────────────── HTTP ─────────────────────────
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = 'jian'
@@ -234,6 +391,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == '/api/ping':
             return self._json(200, {'ok': True})
+        if path == '/api/push/key':
+            key = self.server.push.key()
+            return self._json(200, {'key': key}) if key else self._json(503, {'error': '服务器还不支持手机提醒'})
         if path.startswith('/api/'):
             return self._json(404, {'error': '没有这个接口'})
         self._static(path)
@@ -248,12 +408,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(400, {'error': '请求格式不对'})
         if path == '/api/login':
             return self._login(body)
+        if path not in ('/api/sync', '/api/push', '/api/push/off', '/api/push/test'):
+            return self._json(404, {'error': '没有这个接口'})
+        t = self.server.auth.check_token((self.headers.get('Authorization') or '').removeprefix('Bearer ').strip())
+        if not t:
+            return self._json(401, {'error': '未登录'})
         if path == '/api/sync':
-            tok = (self.headers.get('Authorization') or '').removeprefix('Bearer ').strip()
-            if not self.server.auth.check_token(tok):
-                return self._json(401, {'error': '未登录'})
             return self._json(200, self.server.store.sync(body))
-        self._json(404, {'error': '没有这个接口'})
+        push, tok = self.server.push, t['h'][:16]
+        if not push.vapid:
+            return self._json(503, {'error': '服务器还不支持手机提醒'})
+        ep = body.get('endpoint') if isinstance(body, dict) else None
+        if path == '/api/push':
+            err = push.upsert(tok, body)
+            return self._json(400, {'error': err}) if err else self._json(200, {'ok': True})
+        if path == '/api/push/off':
+            if isinstance(ep, str):
+                push.remove({ep})
+            return self._json(200, {'ok': True})
+        sub = push.find(ep, tok) if isinstance(ep, str) else None   # /api/push/test
+        if not sub:
+            return self._json(404, {'error': '服务器上没有这台手机的订阅'})
+        status, _ = push.send(sub, {'title': '笺 · 提醒已开启', 'tag': 'jian-test', 'body':
+                                    f'日程开始前 {sub["remind"]} 分钟，会像这样提醒你。' if sub['remind'] else '提前提醒现在是关着的。'})
+        return self._json(200, {'ok': 200 <= status < 300, 'status': status})
 
     def _login(self, body):
         ip, auth = self.client_address[0], self.server.auth
@@ -315,6 +493,9 @@ def serve(args):
     srv.store = Store(state)
     srv.auth = Auth(state)
     srv.web = os.path.realpath(args.web)
+    srv.push = Push(state, srv.store, srv.auth)
+    if srv.push.vapid:
+        threading.Thread(target=srv.push.run, daemon=True).start()
     if not srv.auth.has_password():
         log('还没有设置同步密码：jian_sync.py passwd --state', state)
     log(f'jian-sync listening on {args.host}:{args.port} ({"http" if args.plain else "https"})')

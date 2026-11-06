@@ -286,6 +286,9 @@ body.hfree .scroller { scroll-snap-type: none; }   /* 缩放动画和拖动途�
 /* 块里的小任务：一行一项，方框可以直接勾；勾上时和右边待办一样，勾一笔、划一道 */
 .ev-ts { list-style: none; margin: 2px 0 0; padding: 0; }
 .ev.short .ev-ts { display: none; }
+.ev.slim { padding: 3px 1px 3px 5px; font-size: 12px; }   /* 窄到写不下时间：位置就是时间；边距收窄，标题一字一行 */
+.ev.slim .ev-tm { display: none; }
+.ev.slim .ev-t { text-overflow: clip; text-align: center; }
 .ev.inl { display: grid; grid-template-columns: minmax(0, max-content) 1fr; column-gap: 8px; align-items: baseline; align-content: start; }   /* 标题、时间并一行 */
 .ev.inl .ev-t { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ev.inl .ev-tm { white-space: nowrap; overflow: hidden; }
@@ -685,12 +688,12 @@ body.max .edge, body.preview .edge { display: none; }
 .web-only { display: none !important; }
 body.web .web-only { display: grid !important; }
 body.web { --m: 0px; --radius: 0px; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
-body.web .edge, body.web #pinBtn2, body.web #expandBtn, body.web #closeBtn2, body.web .keys { display: none; }
+body.web .edge, body.web #pinBtn2, body.web #closeBtn2, body.web .keys { display: none; }
 body.web #todo {
   padding: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 14px)
            calc(env(safe-area-inset-bottom) + 6px) calc(env(safe-area-inset-left) + 14px);
 }
-body.web .seal-done { right: 120px; }
+body.web .seal-done { right: 156px; }   /* 头部右边有四个按钮和翻页箭头：落在日期和箭头之间 */
 body.web button, body.web .ev, body.web .dv-col { touch-action: manipulation; }
 body.web input, body.web textarea, body.web [contenteditable], body.web .memo { font-size: 16px; }
 body.web .t-btn { opacity: .5; }   /* 没有悬停：删除按钮一直淡淡地露着 */
@@ -704,6 +707,28 @@ body.web .pop.out { animation-name: sheetOut; }
 @keyframes sheetIn { from { opacity: 0; transform: translateY(28px); } }
 @keyframes sheetOut { to { opacity: 0; transform: translateY(18px); } }
 body.web .toasts { bottom: calc(env(safe-area-inset-bottom) + 20px); }
+/* 设置里的提醒状态：一行小字，右边是「开启 / 试一下」 */
+.push-row { padding-top: 0; border-top: 0; }
+.push-row .push-st { flex: 1; font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+
+/* 手机的周视图：只留周网格（没有侧边待办栏，点日期去日视图）；顶栏只留月份、翻周和两个按钮 */
+body.web:not(.mini) #main { grid-template-columns: minmax(0, 1fr); }
+body.web:not(.mini) #todo, body.web:not(.mini) .spine { display: none; }
+body.web #topbar {
+  height: calc(env(safe-area-inset-top) + 50px); gap: 8px;
+  padding: env(safe-area-inset-top) calc(env(safe-area-inset-right) + 8px) 0 calc(env(safe-area-inset-left) + 16px);
+}
+body.web #topbar .seal-logo, body.web #topbar .sub, body.web .week-stat,
+body.web #pinBtn, body.web #minBtn, body.web #closeBtn, body.web .win-btns .sep { display: none; }
+body.web .month { font-size: 21px; }
+body.web .win-btns { margin-left: 0; }
+body.web #topbar .ib { width: 36px; height: 36px; }
+body.web #week { --gutter: 42px; padding: 0 calc(env(safe-area-inset-right) + 2px) env(safe-area-inset-bottom) calc(env(safe-area-inset-left) + 2px); }
+body.web .dh .dn { font-size: 21px; }
+/* 按住拿起日程时，别弹出系统的放大镜和菜单；拉长用的把手加高，指尖好按 */
+body.web #cols, body.web #cols .ev { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+body.web .ev-grip { height: 14px; }
+body.web .ev-grip::after { opacity: .3; }
 
 /* 同步状态：云朵；同步好了里面打个勾，正在同步时轻轻呼吸，连不上时变成朱色 */
 .sync-ind svg .ck { opacity: 0; transition: opacity .3s; }

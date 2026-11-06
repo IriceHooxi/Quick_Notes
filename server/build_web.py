@@ -89,6 +89,27 @@ self.addEventListener('fetch', e => {
     return res;
   })));
 });
+
+// 日程提醒：服务器到点推过来（内容已加密，浏览器解开后交到这里）
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) { d = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || '笺', {
+    body: d.body || '', tag: d.tag || undefined, icon: 'icon-192.png', badge: 'icon-192.png',
+    data: { date: d.date || null, id: d.id || null },
+  }));
+});
+
+// 点通知：App 开着就切过去并定位到那个日程，没开就打开它
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const { date, id } = e.notification.data || {};
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
+    const c = cs[0];
+    if (c) { if (date) c.postMessage({ type: 'focus', date, id }); return c.focus(); }
+    return self.clients.openWindow(date ? `./#focus=${date}${id ? ',' + id : ''}` : './');
+  }));
+});
 """
 
 

@@ -196,23 +196,7 @@ def make_app(hidden, debug, initial):
             os.remove(AUTOSTART_FILE)
 
     # ───────────── 日程展开（与 app.js 保持一致） ─────────────
-    def occurs_on(ev, d):
-        ds = d.isoformat()
-        start = str(ev.get('date', ''))
-        if not start or ds < start or (ev.get('until') and ds > ev['until']):
-            return False
-        rep = ev.get('repeat', 'none')
-        if rep == 'workdays' and d.weekday() >= 5:
-            return False
-        if rep == 'weekly':
-            try:
-                if datetime.date.fromisoformat(start).weekday() != d.weekday():
-                    return False
-            except ValueError:
-                return False
-        if rep not in ('daily', 'workdays', 'weekly') and ds != start:
-            return False
-        return ds not in (ev.get('exdates') or [])
+    occurs_on = syncmerge.occurs_on   # 与同步服务器的手机提醒共用
 
     def hm(m):
         return f'{m // 60:02d}:{m % 60:02d}'

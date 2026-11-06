@@ -9,7 +9,7 @@ DOMAIN="${2:-${HOST#*@}}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 python3 "$ROOT/server/build_web.py" --out "$ROOT/dist/web"
-tar -czf - --owner=0 --group=0 --mode='u+rwX,go+rX,go-w' -C "$ROOT" syncmerge.py server/jian_sync.py server/install.sh server/cert-hook.sh server/systemd \
+tar -czf - --owner=0 --group=0 --mode='u+rwX,go+rX,go-w' -C "$ROOT" syncmerge.py server/jian_sync.py server/webpush.py server/install.sh server/cert-hook.sh server/systemd \
     -C "$ROOT/dist" web \
   | ssh "$HOST" 'install -d -m 755 /opt/jian-sync && tar -xzf - -C /opt/jian-sync --no-same-owner'
 ssh "$HOST" "bash /opt/jian-sync/server/install.sh '$DOMAIN'" </dev/null

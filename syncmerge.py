@@ -13,6 +13,7 @@ ui/app.js 里的 mergeDocs() 是同一套规则的 JS 版本，改这里时两�
   · 删除记录保留 120 天
 这套规则与顺序无关、重复合并不变，所以各端不管按什么顺序、同步几次，最后都一致。
 """
+import datetime
 import json
 import time
 
@@ -79,3 +80,23 @@ def canon(p):
 
 def same(a, b):
     return canon(a) == canon(b)
+
+
+def occurs_on(ev, d):
+    """日程 ev 在 d（datetime.date）这天有没有（重复规则与 app.js 的 occursOn 一致）。桌面提醒和手机推送提醒共用。"""
+    ds = d.isoformat()
+    start = str(ev.get('date', ''))
+    if not start or ds < start or (ev.get('until') and ds > ev['until']):
+        return False
+    rep = ev.get('repeat', 'none')
+    if rep == 'workdays' and d.weekday() >= 5:
+        return False
+    if rep == 'weekly':
+        try:
+            if datetime.date.fromisoformat(start).weekday() != d.weekday():
+                return False
+        except ValueError:
+            return False
+    if rep not in ('daily', 'workdays', 'weekly') and ds != start:
+        return False
+    return ds not in (ev.get('exdates') or [])

@@ -117,6 +117,8 @@ function normalize(d) {
   if (settings.tz !== 'system' && !(tzOK && validTz(settings.tz))) settings.tz = 'system';
   if (settings.miniView !== 'day') settings.miniView = 'list';
   settings.days = clamp(Math.round(+settings.days) || 7, 1, 7);
+  settings.pdays = clamp(Math.round(+settings.pdays) || 3, 1, 7);   // 手机上的周视图一屏几天（手机屏幕窄，默认 3 天）
+  if (settings.pview !== 'week') settings.pview = 'card';            // 手机上次停在哪个视图：日（卡片）/ 周
   const gone = {};   // 删除记录（同步用）：id → 删除时间
   if (d.gone && typeof d.gone === 'object') for (const [k, v] of Object.entries(d.gone)) if (v > 0) gone[k] = +v;
   return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', memoMt: d.memoMt > 0 ? +d.memoMt : 0, gone, colorIdx: d.colorIdx | 0 };
@@ -129,10 +131,10 @@ const ui = {
   sel: today(),
   day: today(),
   hourH: 44,
-  mini: web || !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,   // 手机上就是迷你卡片的样子
+  mini: web ? data.settings.pview !== 'week' : !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,   // 手机的日视图就是迷你卡片的样子
   tab: 'todo',
   dayView: data.settings.miniView === 'day',   // 迷你卡片当前显示日程方块视图（只在迷你模式下生效）
-  days: data.settings.days,                    // 周视图一屏显示几天（1–7）
+  days: web ? data.settings.pdays : data.settings.days,   // 周视图一屏显示几天（1–7）
 };
 
 // 保存（防抖）与撤销（整份快照，数据很小）
@@ -291,7 +293,7 @@ function showLogin(msg = '') {
         if (!r.ok) throw new Error(j.error || '登录失败');
         SY.token = j.token; try { localStorage.setItem('jian-token', j.token); } catch {}
         pw.value = ''; box.classList.add('out'); setTimeout(() => box.remove(), 260);
-        syncNow();
+        syncNow(); pushInit();
       } catch (ex) {
         err.textContent = ex.name === 'TypeError' ? '连不上服务器，检查一下网络' : ex.message;
         if (motion) box.querySelector('.login-card').animate([{ translate: '0' }, { translate: '-6px' }, { translate: '5px' }, { translate: '-3px' }, { translate: '0' }], { duration: 320 });
@@ -302,8 +304,75 @@ function showLogin(msg = '') {
   setTimeout(() => box.querySelector('.login-pw').focus(), 50);
 }
 function logout(msg) {
+  if (!msg && PU.sub) {   // 主动退出：服务器上这台手机的订阅一并取消（登录失效时令牌已经没用了，不必再发）
+    const sub = PU.sub; PU.sub = null;
+    fetch('api/push/off', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SY.token }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+    sub.unsubscribe().catch(() => {});
+  }
   SY.token = null; try { localStorage.removeItem('jian-token'); } catch {}
   setSync({ ok: undefined, at: 0, err: '' }); closePop(); showLogin(msg);
+}
+
+// 手机提醒（Web Push，iOS 16.4 起，要先添加到主屏幕）：把推送订阅连同「提前几分钟」「时区」交给服务器，
+// 到点由服务器推送，App 没开着也能收到。服务器只看到订阅地址，通知内容是加密的。
+const PU = { reg: null, key: null, sub: null, err: '' };
+const pushOK = () => web && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const zoneId = () => data.settings.tz === 'system' ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC') : data.settings.tz;
+function b64uBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function api(path, body) {   // 带设备令牌的 POST
+  const r = await fetch(path, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SY.token }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { logout('登录已失效，请重新输入同步密码'); throw new Error('登录已失效'); }
+  if (!r.ok) throw new Error(j.error || `服务器返回 ${r.status}`);
+  return j;
+}
+async function pushInit() {   // 先备好 Service Worker 和服务器公钥：点「开启」时要能立刻订阅；已订阅的把最新设置报给服务器
+  if (!pushOK()) return paintPush();
+  try {
+    PU.reg = await navigator.serviceWorker.ready;
+    PU.sub = await PU.reg.pushManager.getSubscription();
+    if (!PU.key) {
+      const r = await fetch('api/push/key', { cache: 'no-store' }), j = await r.json().catch(() => ({}));
+      if (r.ok && j.key) { PU.key = b64uBytes(j.key); PU.err = ''; } else PU.err = j.error || '服务器还不支持手机提醒';
+    }
+    await pushSave();
+  } catch {}   // 离线：下次打开再说
+  paintPush();
+}
+async function pushSave() { if (PU.sub && SY.token) await api('api/push', { sub: PU.sub.toJSON(), remind: data.settings.remind, tz: zoneId() }); }
+const pushSaveSoon = () => { if (PU.sub) pushSave().catch(e => toast('提醒设置没能存到服务器：' + e.message)); };
+function pushEnable() {   // 要在点击里直接调用 subscribe：iOS 只认用户亲手点出来的订阅请求
+  if (!PU.reg || !PU.key) { toast(PU.err || '还在准备，稍等一下再点'); pushInit(); return; }
+  PU.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: PU.key }).then(async sub => {
+    PU.sub = sub;
+    if (!data.settings.remind) { data.settings.remind = 10; save(); for (const x of $$('[data-rem]')) x.classList.toggle('on', +x.dataset.rem === 10); }
+    await pushSave(); paintPush(); pushTest();
+  }).catch(e => {
+    paintPush();
+    toast(Notification.permission === 'denied' ? '通知被关掉了：到 iPhone「设置 → 通知 → 笺」里打开' : '没能开启提醒：' + (e.message || e));
+  });
+}
+async function pushTest() {
+  try { const j = await api('api/push/test', { endpoint: PU.sub.endpoint }); toast(j.ok ? '发了一条测试提醒，看看收到没有' : `测试提醒没发出去（${j.status}）`); }
+  catch (e) { toast(e.message); }
+}
+function pushText() {
+  if (!pushOK()) return navigator.standalone === false ? '添加到主屏幕、从主屏幕打开后才能收到提醒' : '这个浏览器收不到推送提醒';
+  if (Notification.permission === 'denied') return '通知被关掉了：到 iPhone「设置 → 通知 → 笺」里打开';
+  if (PU.err) return PU.err;
+  if (!PU.sub) return '手机提醒还没开启';
+  return data.settings.remind ? `日程开始前 ${data.settings.remind} 分钟提醒` : '提醒已关闭';
+}
+function paintPush() {
+  for (const p of $$('.pop-set')) {
+    const t = $('.push-st', p), b = $('.push-go', p); if (!t) continue;
+    t.textContent = pushText();
+    b.hidden = !pushOK() || Notification.permission === 'denied' || !!PU.err || (PU.sub && !data.settings.remind);
+    b.textContent = PU.sub ? '试一下' : '开启';
+  }
 }
 
 // ───────────────────────── 日程展开 ─────────────────────────
@@ -528,7 +597,8 @@ function setDays(n, clientX) {
     const at = (scroller.scrollLeft + ax) / from;                                    // 指针下是第几天（带小数）
     const l0 = scroller.scrollLeft / from, l1 = clamp(Math.round(at - ax / to), 0, 7 - n);
     ui.days = n;
-    if (data.settings.days !== n) { data.settings.days = n; save(); }
+    const k = web ? 'pdays' : 'days';   // 手机和电脑屏幕宽窄不同，各记各的
+    if (data.settings[k] !== n) { data.settings[k] = n; save(); }
     // 列宽和横向位置一起平滑过渡：每帧按当前列宽换算，指针下的那天始终跟着指针
     cancelAnimationFrame(colAnim); document.body.classList.add('hfree');
     const t0 = performance.now(), dur = motion ? 260 : 0;
@@ -540,7 +610,7 @@ function setDays(n, clientX) {
     };
     if (dur) colAnim = requestAnimationFrame(step); else step(t0);
   }
-  zoomTip(n === 7 ? '一周 7 天' : `显示 ${n} 天　Ctrl+0 回到一周`);
+  zoomTip(n === 7 ? '一周 7 天' : web ? `一屏 ${n} 天` : `显示 ${n} 天　Ctrl+0 回到一周`);
 }
 let wAcc = 0, wAccT = 0, wLast = 0;
 function wheelStep(e) {   // 滚轮 → 一格一格：鼠标一格直接算一步，触摸板的细碎增量攒够了再算；一次甩动不会一路冲到底
@@ -711,9 +781,12 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   if (b._t !== tHtml) { tEl.innerHTML = tHtml; b._t = tHtml; }
   if (b._tm !== tmHtml) { tmEl.innerHTML = tmHtml; b._tm = tmHtml; }
   const tmLines = clamp(lines(tmStr, 11, inW), 1, 2);
+  // 窄到连开始时间都写不下一行（手机上一屏看很多天、又有并排的日程）：不写时间，位置本身就是时间，标题一字一行竖着排
+  const slim = textW(hm(o.start), 11) * 1.04 > inW;
+  b.classList.toggle('slim', slim);
 
   // 排版
-  let tl = clamp(Math.floor((raw - 7 - LH_TM * tmLines) / LH_T), 1, 4), items = [], more = null, inl = false, noTm = false;
+  let tl = slim ? clamp(Math.floor((raw - 7) / LH_T), 1, 6) : clamp(Math.floor((raw - 7 - LH_TM * tmLines) / LH_T), 1, 4), items = [], more = null, inl = false, noTm = false;
   if (ts.length && raw >= 38 && inW >= 60) {
     // 地方让给小任务：块够宽时标题和时间并成一行；不够宽时标题最多两行，挤不下再只留一行；
     // 还是连一行小任务都放不下，就收起时间（块的位置本身就说明了时间）
@@ -737,7 +810,7 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   const last = items[items.length - 1];
   reconcile(list, items, t => t.id, makeEvTask, (n, t) => fillEvTask(n, t, t === last ? more : null), instant || !motion);
   // 列不出小任务时（块太矮 / 太窄），右下角还是显示完成了几项；窄块里会压住时间的话就不显示（悬停提示里有）
-  let bt = ts.length && !items.length ? `${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}` : '';
+  let bt = ts.length && !items.length && !slim ? `${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}` : '';
   if (bt && raw >= 38) {
     const bottom = 3 + Math.min(tl, lines(ev.title || '未命名', 12.5, inW)) * LH_T + tmLines * LH_TM;
     if (bottom > px - 17 && textW(tmStr, 11) * 1.04 + 32 > inW) bt = '';
@@ -768,12 +841,18 @@ const dayAt = x => {   // 指针压在左边时间刻度上（下面是滚出去
 const snap15 = m => Math.round(m / 15) * 15;
 const floorTo = (m, s) => Math.floor(m / s) * s;
 
+// 手指（手机）：轻点和鼠标单击一样；按住不动约 0.4 秒，日程块被“拿起来”（空白处则开始划出新日程）才跟着手指走；
+// 没按住就移动，是在滚动页面，交给浏览器。拿起之后拦下 touchmove，页面就不会跟着滚。
+const HOLD_MS = 380;
+let lastScrollT = 0;
 colsEl.addEventListener('pointerdown', e => {
   if (e.button !== 0 || drag) return;
   if (e.target.closest('.ev-chk')) { e.preventDefault(); return; }   // 勾块里的小任务：不拖动、不开浮层
   const b = e.target.closest('.ev');
   if (downClosedPop && !b) return;              // 这次点击只是为了关掉浮层
-  e.preventDefault();
+  const touch = e.pointerType === 'touch';
+  if (touch && performance.now() - lastScrollT < 300) return;   // 这一下只是按停正在惯性滚动的页面
+  if (!touch) e.preventDefault();
   const m = minAt(e.clientY);
   if (b) {
     const ev = findEv(b.dataset.id); if (!ev) return;
@@ -784,21 +863,37 @@ colsEl.addEventListener('pointerdown', e => {
     const a = clamp(floorTo(m, 15), 0, 1425);
     drag = { kind: 'create', a, day: dayAt(e.clientX), start: a, end: a + 15 };
   }
-  Object.assign(drag, { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, moved: false, pid: e.pointerId });
-  try { colsEl.setPointerCapture(e.pointerId); } catch {}
+  Object.assign(drag, { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, moved: false, pid: e.pointerId, touch, armed: !touch });
+  if (touch) drag.hold = setTimeout(armDrag, HOLD_MS);
+  else try { colsEl.setPointerCapture(e.pointerId); } catch {}
 });
+function armDrag() {   // 按住够久了：拿起来
+  const d = drag; if (!d || d.armed) return;
+  d.armed = true; d.x0 = d.x; d.y0 = d.y;
+  dragMove();
+}
 colsEl.addEventListener('pointermove', e => {
   if (!drag || e.pointerId !== drag.pid) return;
-  drag.x = e.clientX; drag.y = e.clientY; dragMove(); autoScroll(e.clientX, e.clientY);
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (!drag.armed) {   // 还没拿起来就动了：是在滚动页面
+    if (Math.hypot(drag.x - drag.x0, drag.y - drag.y0) > 8) { clearTimeout(drag.hold); drag = null; }
+    return;
+  }
+  dragMove(); autoScroll(e.clientX, e.clientY);
 });
-colsEl.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pid) dragEnd(); });
-colsEl.addEventListener('pointercancel', () => { if (drag) dragCancel(); });
+colsEl.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pid) { clearTimeout(drag.hold); dragEnd(); } });
+colsEl.addEventListener('pointercancel', () => {
+  if (!drag) return;
+  clearTimeout(drag.hold);
+  if (drag.armed) dragCancel(); else drag = null;
+});
+colsEl.addEventListener('touchmove', e => { if (drag && drag.armed) e.preventDefault(); }, { passive: false });
 colsEl.addEventListener('click', e => { const c = e.target.closest('.ev-chk'); if (c) blockCheck(c); });
 
 function dragMove() {
   const d = drag;
   if (!d.moved) {
-    if (Math.hypot(d.x - d.x0, d.y - d.y0) < 4) return;
+    if (!d.touch && Math.hypot(d.x - d.x0, d.y - d.y0) < 4) return;   // 手指是按住拿起的，拿起就算开始拖
     d.moved = true;
     if (d.kind === 'create') {
       d.g = el(`<div class="ev ghost" style="--c:var(--c-${nextColor()});--l:0;--w:1"><div class="ev-tm"></div></div>`);
@@ -814,6 +909,7 @@ function dragMove() {
   if (d.kind === 'create') {
     const b = clamp(floorTo(m, 15), 0, 1425);
     d.start = Math.min(d.a, b); d.end = Math.max(d.a, b) + 15;
+    if (d.touch) d.end = Math.min(1440, Math.max(d.end, d.start + 30));   // 手指划的新日程至少半小时，方块大到能看清
     d.g.style.setProperty('--s', d.start); d.g.style.setProperty('--e', d.end);
     d.g.firstChild.textContent = `${hm(d.start)} – ${hm(d.end)}`;
     return;
@@ -1392,6 +1488,7 @@ function zoneRow(id, cur, t) {
 function setTz(id) {
   if (id === data.settings.tz || !(id === 'system' || (tzOK && validTz(id)))) return;
   data.settings.tz = id; save();
+  if (web) pushSaveSoon();   // 服务器按这个时区推送提醒
   tick(); renderHeader();   // “今天”可能跟着变：tick 负责换日，并刷新时间线和过去 / 进行中的日程
   if (!ui.mini) scrollToNow();
 }
@@ -1403,7 +1500,9 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     <div class="set-main">
     <h4>设置</h4>
     <div class="set-row th-row"><span class="lab">纸色</span><div class="themes">${THEMES.map(([k, n, c]) => `<button class="th${s.theme === k ? ' on' : ''}" data-th="${k}" style="background:${c}"><span>${n}</span></button>`).join('')}</div></div>
-    ${web ? '' : `<div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>`}
+    <div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>
+    ${web ? '<div class="set-row push-row"><span class="push-st"></span><button class="link push-go" hidden></button></div>' : ''}
+    ${web ? `<div class="set-row"><span class="lab">周视图一屏</span><div class="stepper"><button data-pd="-1">−</button><b class="pdv">${s.pdays} 天</b><button data-pd="1">+</button></div></div>` : ''}
     <div class="set-row"><span class="lab">一屏显示</span><div class="stepper"><button data-st="ds-1">−</button><b class="dsv">${pad(s.dayStart)}:00</b><button data-st="ds1">+</button><span style="color:var(--ink-3);margin:0 2px">至</span><button data-st="de-1">−</button><b class="dev">${pad(s.dayEnd)}:00</b><button data-st="de1">+</button></div></div>
     ${tzOK ? '<div class="set-row"><span class="lab">时区</span><button class="tz-cur" title="笺按哪里的时间显示日程、发出提醒"></button></div>' : ''}
     <div class="set-row"><span class="lab">同步</span><span class="sync-st"></span>${web ? '<button class="link sync-now">立即同步</button>' : ''}</div>
@@ -1421,6 +1520,7 @@ function openSettings(page, anchor = $('#settingsBtn')) {
   </div>`);
   const main = $('.set-main', p), tzp = $('.set-tz', p), q = $('.tz-q', p), list = $('.tz-list', p);
   $('.sync-st', p).textContent = syncText();
+  if (web) setTimeout(paintPush);   // 浮层挂上页面后再填
   let hi = -1;   // 键盘 ↑↓ 选中的那一行
   const paintCur = () => {
     const b = $('.tz-cur', p);
@@ -1478,7 +1578,14 @@ function openSettings(page, anchor = $('#settingsBtn')) {
       return;
     }
     const rem = t.closest('[data-rem]');
-    if (rem) { s.remind = +rem.dataset.rem; save(); for (const x of $$('[data-rem]', p)) x.classList.toggle('on', x === rem); return; }
+    if (rem) {
+      s.remind = +rem.dataset.rem; save(); for (const x of $$('[data-rem]', p)) x.classList.toggle('on', x === rem);
+      if (web) { if (s.remind && !PU.sub && pushOK() && Notification.permission !== 'denied') pushEnable(); else pushSaveSoon(); paintPush(); }
+      return;
+    }
+    if (t.closest('.push-go')) { PU.sub ? pushTest() : pushEnable(); return; }
+    const pd = t.closest('[data-pd]');
+    if (pd) { setDays(ui.days + +pd.dataset.pd); $('.pdv', p).textContent = `${s.pdays} 天`; return; }
     const stp = t.closest('[data-st]');
     if (stp) {
       const k = stp.dataset.st, v = +k.slice(2);
@@ -1525,8 +1632,19 @@ function gotoWeek(mon, slide = true) {
   closePop();
   renderHeader(); renderDays(); renderGrid(true); renderTodo();
   if (ui.days < 7 && colw) scrollX(startFor(diffDays(ymd(mon), ui.sel)) * colw);   // 翻到的那周：选中那天放在眼前
-  if (slide && motion) for (const n of [colsEl, $('#daysHead')])
-    n.animate([{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
+  if (slide && motion) {
+    // 滑入期间先不吸附整列：不然列一平移，横向吸附就把滚动位置跟着“吸”过去，滑入效果被抵消
+    document.body.classList.add('hfree');
+    let a;
+    for (const n of [colsEl, $('#daysHead')])
+      a = n.animate([{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
+    a.finished.catch(() => {}).then(() => { if (!asSlid) document.body.classList.remove('hfree'); });
+  }
+}
+function flipWeek(dir) {   // 手机上滑过一周的边缘：翻到下一周从周一看起，翻回上一周从周日看起
+  const mon = addDays(ui.week, 7 * dir);
+  ui.sel = ymd(dir > 0 ? mon : addDays(mon, 6));
+  gotoWeek(mon);
 }
 function selectDay(ds) {
   if (!inWeek(ds)) { ui.sel = ds; gotoWeek(mondayOf(parse(ds))); return; }
@@ -1578,8 +1696,14 @@ function togglePin() {
   send('setPinned', { pinned: ui.pinned }); if (!native) toast('预览模式不支持置顶');
 }
 function toggleMini() {
-  if (web) return;
   closePop();
+  if (web) {   // 手机：日视图（卡片）⇄ 周视图，记住停在哪个
+    const mini = !ui.mini;
+    data.settings.pview = mini ? 'card' : 'week'; save();
+    document.body.classList.add('switching');
+    setTimeout(() => onMode({ mini, pinned: false }), 140);
+    return;
+  }
   if (!native) return onMode({ mini: !ui.mini, pinned: ui.pinned });
   document.body.classList.add('switching');
   setTimeout(() => send('setMode', { mini: !ui.mini }), 160);
@@ -1686,7 +1810,11 @@ function init() {
   $('#closeBtn').onclick = $('#closeBtn2').onclick = () => send('hide');
   $('#prevDay').onclick = () => selectDay(shift(ui.sel, -1));
   $('#nextDay').onclick = () => selectDay(shift(ui.sel, 1));
-  $('#daysHead').addEventListener('click', e => { const h = e.target.closest('.dh'); if (h && h.dataset.date) selectDay(h.dataset.date); });
+  $('#daysHead').addEventListener('click', e => {
+    const h = e.target.closest('.dh'); if (!h || !h.dataset.date) return;
+    selectDay(h.dataset.date);
+    if (web && !ui.mini) toggleMini();   // 手机没有侧边的待办栏：点日期就去看那天的日视图
+  });
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
   $('#dayBtn').onclick = () => setDayView(!ui.dayView);
   $('#setBtn2').onclick = e => { if (closedKind !== 'settings') openSettings(undefined, e.currentTarget); };
@@ -1716,7 +1844,33 @@ function init() {
     e.preventDefault();
     const s = wheelStep(e); if (s) scroller.scrollTo({ left: clamp(firstVis() + s, 0, 7 - ui.days) * colw, behavior: motion ? 'smooth' : 'auto' });
   }, { passive: false });
-  scroller.addEventListener('scroll', () => { $('#daysHead').scrollLeft = scroller.scrollLeft; }, { passive: true });
+  scroller.addEventListener('scroll', () => { $('#daysHead').scrollLeft = scroller.scrollLeft; if (!drag) lastScrollT = performance.now(); }, { passive: true });
+  if (web) {
+    // 两指捏合（iOS 的 gesture 事件）：张开看得少而大，捏拢看得多；顺便挡住整页被放大
+    let g0 = 0;
+    $('#week').addEventListener('gesturestart', e => { e.preventDefault(); g0 = ui.days; if (drag) { clearTimeout(drag.hold); if (drag.armed) dragCancel(); else drag = null; } }, { passive: false });
+    $('#week').addEventListener('gesturechange', e => { e.preventDefault(); const n = clamp(Math.round(g0 / e.scale), 1, 7); if (n !== ui.days) setDays(n, e.clientX); }, { passive: false });
+    $('#week').addEventListener('gestureend', e => e.preventDefault(), { passive: false });
+    // 已经滚到这周最左 / 最右，再往外划：翻到上一周 / 下一周
+    let sw = null;
+    scroller.addEventListener('touchstart', e => {
+      if (e.touches.length !== 1 || drag) { sw = null; return; }
+      const t = e.touches[0], max = scroller.scrollWidth - scroller.clientWidth;
+      sw = { x: t.clientX, y: t.clientY, t: performance.now(), atL: scroller.scrollLeft <= 1, atR: scroller.scrollLeft >= max - 1 };
+    }, { passive: true });
+    scroller.addEventListener('touchend', e => {
+      const s = sw; sw = null;
+      if (!s || (drag && drag.armed) || e.changedTouches.length !== 1) return;
+      const t = e.changedTouches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6 || performance.now() - s.t > 700) return;
+      if (dx < 0 && s.atR) flipWeek(1); else if (dx > 0 && s.atL) flipWeek(-1);
+    }, { passive: true });
+    $('#expandBtn').title = '周视图'; $('#miniBtn').title = '回到日视图';
+    // 点了提醒通知：打开到那天、闪一下那个日程
+    navigator.serviceWorker?.addEventListener('message', e => { if (e.data && e.data.type === 'focus') App.focus(e.data.date, e.data.id); });
+    const f = /^#focus=(\d{4}-\d{2}-\d{2})(?:,([\w-]+))?$/.exec(location.hash);
+    if (f) { history.replaceState(null, '', location.pathname); setTimeout(() => App.focus(f[1], f[2]), 400); }
+  }
   $('#memo').addEventListener('input', e => { data.memo = e.target.value; save(); });
 
   renderAll();
@@ -1743,7 +1897,7 @@ function init() {
     addEventListener('online', () => syncSoon(200));
     setInterval(() => { if (!document.hidden) syncNow(); }, 60000);
     setInterval(() => { if ($('#syncInd')) $('#syncInd').title = syncText(); }, 30000);
-    syncNow();
+    syncNow(); pushInit();
   }
   send('ready');
 }
