@@ -77,6 +77,16 @@ cd Quick_Notes
 - 每天第一次修改前自动备份到 `backups/`，保留最近 14 天
 - 换电脑时复制这个文件夹即可
 
+## 手机同步（可选）
+
+在自己的服务器上跑一个很小的同步服务（只用 Python 标准库），就能在手机上用笺。
+
+- 电脑和手机自动同步日程、小任务和随记。
+- 合并按条进行：两边改了不同的条目都会保留。
+- 手机用 Safari 打开服务器地址，添加到主屏幕，像 App 一样用；没网也能看、能改，联网后自动同步。
+
+部署和设置方法见 [server/README.md](server/README.md)。
+
 ## 占用
 
 - 空闲时 CPU 为 0：只有每分钟一次的时间线刷新和每 20 秒一次的提醒检查
@@ -85,8 +95,10 @@ cd Quick_Notes
 ## 开发
 
 ```
-jian.py              原生外壳：窗口、托盘、提醒、存储、单实例（Python + GTK3 + WebKit2GTK）
-ui/                  界面（HTML / CSS / JS，无框架）
+jian.py              原生外壳：窗口、托盘、提醒、存储、同步、单实例（Python + GTK3 + WebKit2GTK）
+syncmerge.py         同步合并规则（桌面端与同步服务器共用；app.js 里有同一套规则的 JS 版本）
+ui/                  界面（HTML / CSS / JS，无框架）；手机网页版也用它
+server/              同步服务器、手机网页版构建脚本、部署脚本（见 server/README.md）
   fonts/wenkai/      霞鹜文楷屏幕阅读版（SIL OFL 1.1，见 OFL.txt）
 assets/              图标；修改 jian.svg 后运行 make_icons.py 重新生成 PNG
 install.sh           从源码安装启动器

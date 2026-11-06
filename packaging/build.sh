@@ -28,7 +28,9 @@ PKG="$STAGE/jian"
 SHARE="$PKG/usr/share/jian"
 DOC="$PKG/usr/share/doc/jian"
 mkdir -p "$SHARE" "$DOC" "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications"
-git archive "$REF" jian.py ui assets | tar -x -C "$SHARE"
+FILES=(jian.py ui assets)
+git cat-file -e "$REF:syncmerge.py" 2>/dev/null && FILES+=(syncmerge.py)   # 1.1 起有同步，更早的版本没有这个文件
+git archive "$REF" "${FILES[@]}" | tar -x -C "$SHARE"
 git show "$REF:README.md" > "$DOC/README.md"
 
 for size in 256 128 64 48; do

@@ -680,6 +680,50 @@ body.mini.dayview .tabs { display: none; }
 .edge.se { bottom: 0; right: 0; width: 18px; height: 18px; cursor: se-resize; }
 body.max .edge, body.preview .edge { display: none; }
 
+/* —— 手机网页版（body.web，由同步服务器提供）：迷你卡片的版式铺满屏幕；浮层从底部升起；
+      输入框用 16px，免得 iOS 一聚焦就把页面放大 —— */
+.web-only { display: none !important; }
+body.web .web-only { display: grid !important; }
+body.web { --m: 0px; --radius: 0px; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+body.web .edge, body.web #pinBtn2, body.web #expandBtn, body.web #closeBtn2, body.web .keys { display: none; }
+body.web #todo {
+  padding: calc(env(safe-area-inset-top) + 6px) calc(env(safe-area-inset-right) + 14px)
+           calc(env(safe-area-inset-bottom) + 6px) calc(env(safe-area-inset-left) + 14px);
+}
+body.web .seal-done { right: 120px; }
+body.web button, body.web .ev, body.web .dv-col { touch-action: manipulation; }
+body.web input, body.web textarea, body.web [contenteditable], body.web .memo { font-size: 16px; }
+body.web .t-btn { opacity: .5; }   /* 没有悬停：删除按钮一直淡淡地露着 */
+body.web .dv-col { cursor: cell; }
+body.web .pop {
+  left: calc(env(safe-area-inset-left) + 8px); right: calc(env(safe-area-inset-right) + 8px); top: auto;
+  bottom: calc(env(safe-area-inset-bottom) + 8px); width: auto; max-height: calc(100dvh - env(safe-area-inset-top) - 24px);
+  overflow-y: auto; border-radius: 16px; animation-name: sheetIn;
+}
+body.web .pop.out { animation-name: sheetOut; }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(28px); } }
+@keyframes sheetOut { to { opacity: 0; transform: translateY(18px); } }
+body.web .toasts { bottom: calc(env(safe-area-inset-bottom) + 20px); }
+
+/* 同步状态：云朵；同步好了里面打个勾，正在同步时轻轻呼吸，连不上时变成朱色 */
+.sync-ind svg .ck { opacity: 0; transition: opacity .3s; }
+.sync-ind.ok svg .ck { opacity: 1; }
+.sync-ind.bad { color: var(--accent); }
+.sync-ind.busy svg { animation: breathe 1.2s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: .35; } }
+
+/* 手机第一次打开：输入同步密码 */
+.login { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: var(--fiber), var(--grain), var(--paper); transition: opacity .25s; }
+.login.out { opacity: 0; pointer-events: none; }
+.login-card { width: min(330px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.login-card .seal-logo { width: 54px; height: 54px; font-size: 30px; border-radius: 10px; margin-bottom: 4px; }
+.login-card h3 { margin: 0; font-weight: normal; font-size: 20px; letter-spacing: .14em; }
+.login-card p { margin: 0 0 6px; font-size: 13.5px; color: var(--ink-2); line-height: 1.7; text-wrap: balance; }
+.login-pw { width: 100%; height: 46px; padding: 0 14px; border-radius: 11px; border: 1px solid var(--rule); background: var(--paper-hi); color: var(--ink); font: inherit; font-size: 16px; outline: none; transition: border-color .2s; }
+.login-pw:focus { border-color: var(--ink-3); }
+.login-go { width: 100%; height: 46px; font-size: 15px; justify-content: center; }
+.login-err { min-height: 20px; font-size: 13px; color: var(--accent); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }

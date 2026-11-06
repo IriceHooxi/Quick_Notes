@@ -1,0 +1,10 @@
+[Unit]
+Description=Jian (笺) sync: get or renew the TLS certificate (Let's Encrypt, HTTP-01 on port 80)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/jian-sync/cert.env
+# 证书快到期（短期证书剩一半寿命左右）时才会真正续期；续期成功后由 cert-hook.sh 交给同步服务
+ExecStart=/usr/local/bin/lego run --accept-tos --account-id jian --domains ${CERT_DOMAIN} --http --profile shortlived --path /etc/jian-sync/lego --deploy-hook /opt/jian-sync/server/cert-hook.sh --log.format text

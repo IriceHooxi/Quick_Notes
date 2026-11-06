@@ -1,0 +1,39 @@
+[Unit]
+Description=Jian (笺) sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=jian
+Group=jian
+ExecStart=/usr/bin/python3 /opt/jian-sync/server/jian_sync.py serve --state /var/lib/jian-sync --web /opt/jian-sync/web --port 8443 --cert /etc/jian-sync/tls/cert.pem --key /etc/jian-sync/tls/key.pem
+Restart=always
+RestartSec=3
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+MemoryMax=150M
+TasksMax=256
+
+# 只能写自己的数据目录，别的一概碰不到
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/jian-sync
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

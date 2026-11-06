@@ -24,6 +24,7 @@ import time
 import shutil
 import signal
 import datetime
+import threading
 try:
     from zoneinfo import ZoneInfo     # Python 3.9+；更早的版本只能跟随系统时区
 except ImportError:
@@ -39,6 +40,10 @@ TRAY_ICON = os.path.join(ROOT, 'assets', 'jian-tray.svg')
 MARGIN = 10          # 窗口阴影留边，需与 style.css 中 --m 一致
 CORNER = 18          # 角落缩放热区
 HIBERNATE_AFTER = int(os.environ.get('JIAN_HIBERNATE', 20 * 60))  # 隐藏超过这么久（秒）就释放网页进程（约 170MB），只留提醒与托盘
+
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+import syncmerge  # noqa: E402  与同步服务器共用的合并规则
 
 
 def log(*a):
@@ -116,6 +121,7 @@ def make_app(hidden, debug, initial):
     DATA_FILE = os.path.join(DATA_DIR, 'data.json')
     STATE_FILE = os.path.join(DATA_DIR, 'window.json')
     BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+    SYNC_FILE = os.path.join(DATA_DIR, 'sync.json')    # {"url": "https://…", "token": "…"}；没有这个文件就不同步
     AUTOSTART_FILE = os.path.join(GLib.get_user_config_dir(), 'autostart', APP_ID + '.desktop')
 
     # ───────────── 数据 ─────────────
@@ -434,6 +440,113 @@ def make_app(hidden, debug, initial):
             except GLib.Error:
                 pass
 
+    # ───────────── 同步（server/jian_sync.py） ─────────────
+    class Syncer:
+        """本机有改动 2 秒后、启动 3 秒后、窗口打开时、平时每分钟（藏在后台时每 5 分钟）各同步一次。
+        把本机的数据发给服务器，服务器合并后把结果发回来；网络请求在后台线程里做，不卡界面。"""
+        def __init__(self, app):
+            self.app = app
+            self.cfg = None
+            self.busy = self.again = False
+            self.timer = 0
+            self.ticks = 0
+            self.last_ok = 0
+            try:
+                with open(SYNC_FILE, encoding='utf-8') as f:
+                    c = json.load(f)
+                url, tok = c.get('url'), c.get('token')
+                if isinstance(url, str) and url.startswith(('https://', 'http://')) and isinstance(tok, str) and tok:
+                    self.cfg = {'url': url.rstrip('/'), 'token': tok}
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                log('sync.json 读取失败', e)
+            self.st = {} if self.cfg else {'off': True}
+            if self.cfg:
+                GLib.timeout_add_seconds(60, self._tick)
+                self.soon(3)
+
+        def soon(self, sec=2):
+            if not self.cfg:
+                return
+            if self.timer:
+                GLib.source_remove(self.timer)
+            self.timer = GLib.timeout_add(int(sec * 1000), self._fire)
+
+        def refresh(self):   # 打开窗口时：最近 15 秒内没同步过就马上同步一次
+            if self.cfg and time.time() - self.last_ok > 15:
+                self.soon(0.3)
+
+        def _fire(self):
+            self.timer = 0
+            self.now()
+            return False
+
+        def _tick(self):
+            self.ticks += 1
+            if (self.app.win and self.app.win.get_visible()) or self.ticks % 5 == 0:
+                self.now()
+            return True
+
+        def now(self):
+            if not self.cfg:
+                return
+            if self.busy:
+                self.again = True
+                return
+            self.busy = True
+            body = json.dumps(syncmerge.part(self.app.store.data), ensure_ascii=False).encode()
+            threading.Thread(target=self._run, args=(dict(self.cfg), body), daemon=True).start()
+
+        @staticmethod
+        def _post(cfg, body):   # 后台线程
+            import urllib.request
+            import urllib.error
+            req = urllib.request.Request(cfg['url'] + '/api/sync', data=body, method='POST', headers={
+                'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg['token'], 'User-Agent': f'jian/{VERSION}'})
+            try:
+                with urllib.request.urlopen(req, timeout=25) as r:
+                    return True, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return False, '同步密钥已失效' if e.code == 401 else f'服务器出错（{e.code}）'
+            except Exception as e:
+                log('同步失败', repr(e)[:160])
+                return False, '连不上服务器'
+
+        def _run(self, cfg, body):
+            GLib.idle_add(self._done, *self._post(cfg, body))
+
+        def _done(self, ok, val):
+            self.busy = False
+            if ok:
+                self.apply(val)
+                self.last_ok = time.time()
+                self.st = {'ok': True, 'at': int(self.last_ok * 1000)}
+            else:
+                self.st = {'ok': False, 'err': val, 'at': self.st.get('at')}
+            self.report()
+            if self.again:
+                self.again = False
+                self.soon(0.3)
+            return False
+
+        def apply(self, remote):
+            remote = syncmerge.part(remote)
+            app = self.app
+            if app.view:   # 网页开着：交给 app.js 合并（它手里可能有还没存下的改动），合并完它会存回来
+                app.js(f'App.applyRemote({json.dumps(remote, ensure_ascii=False)})')
+                return
+            mine = syncmerge.part(app.store.data)   # 网页已休眠：直接合并进数据文件（提醒也就能看到手机上加的日程）
+            merged = syncmerge.merge(mine, remote)
+            if not syncmerge.same(merged, mine):
+                try:
+                    app.store.save({**app.store.data, **merged})
+                except OSError as e:
+                    log('保存失败', e)
+
+        def report(self):
+            self.app.js(f'App.syncState({json.dumps(self.st)})')
+
     # ───────────── 应用主体 ─────────────
     class JianApp(Gtk.Application):
         def __init__(self):
@@ -470,6 +583,7 @@ def make_app(hidden, debug, initial):
             self.hold()
             self.notifier = Notifier(self)
             self.reminder = Reminder(self)
+            self.syncer = Syncer(self)
             try:
                 self.tray = Tray(self)
             except Exception as e:
@@ -749,6 +863,7 @@ def make_app(hidden, debug, initial):
                 GLib.source_remove(self._hib_timer)
                 self._hib_timer = 0
             self.ensure_window()
+            self.syncer.refresh()
             if not self.ready and not self.win.get_visible():
                 # 页面还没加载好：等它就绪再显示，免得先闪出一个透明空窗
                 if not self._show_when_ready:
@@ -865,11 +980,14 @@ def make_app(hidden, debug, initial):
                     self.store.save(msg.get('data'))
                 except OSError as e:
                     log('保存失败', e)
+                if msg.get('changed'):
+                    self.syncer.soon(2)
             elif t == 'ready':
                 self.ready = True
                 pending, self.pending_js = self.pending_js, []
                 for code in pending:
                     self.js(code)
+                self.syncer.report()
                 if self._show_when_ready:
                     self._show_when_ready = False
                     self._really_show()

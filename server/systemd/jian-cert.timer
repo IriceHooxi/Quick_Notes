@@ -1,0 +1,10 @@
+[Unit]
+Description=Jian (笺) sync: check the TLS certificate twice a day
+
+[Timer]
+OnCalendar=*-*-* 04,16:20:00
+RandomizedDelaySec=40m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

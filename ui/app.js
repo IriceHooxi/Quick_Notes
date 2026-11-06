@@ -17,7 +17,8 @@ const composing = e => e.isComposing || e.keyCode === 229;   // 中文输入法�
 
 const native = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge);
 const send = (type, payload = {}) => { if (native) window.webkit.messageHandlers.bridge.postMessage(JSON.stringify({ type, ...payload })); };
-if (!native) document.body.classList.add('preview');
+const web = !native && !!window.__WEB__;   // 手机网页版（由同步服务器提供，见 server/）
+if (!native) document.body.classList.add(web ? 'web' : 'preview');
 
 // 日期：统一用本地日期字符串 YYYY-MM-DD，时间用“当天第几分钟”
 const pad = n => String(n).padStart(2, '0');
@@ -86,6 +87,7 @@ const I = {
   plus: '<svg viewBox="0 0 24 24"><path d="M12.3 5.6c-.4 4.3-.3 8.6.1 12.9M5.7 12.2c4.2.3 8.5.2 12.7-.3"/></svg>',
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 12.2h13M13.5 7.5l4.8 4.7-4.8 4.8"/></svg>',
   day: '<svg viewBox="0 0 24 24"><path d="M5 4.5v15M5 8h1.8M5 12h1.8M5 16h1.8"/><rect x="9.3" y="5.3" width="10" height="5.4" rx="1.6"/><rect x="9.3" y="13.1" width="10" height="6" rx="1.6"/></svg>',
+  cloud: '<svg viewBox="0 0 24 24"><path d="M7.4 18.3h9.8a3.6 3.6 0 0 0 .4-7.2 5.3 5.3 0 0 0-10.2-1.3 4.3 4.3 0 0 0 0 8.5z"/><path class="ck" d="M9.6 13.6l1.8 1.7 3.2-3.4"/></svg>',
 };
 const BOX = '<svg viewBox="0 0 22 22"><path class="box" d="M4.3 5.2c3.9-.7 9.4-.6 13.3-.2.5 3.9.4 8.3-.1 12.3-4 .5-9 .4-13 .1-.5-4-.5-8.2-.2-12.2z"/><path class="tick" d="M6.4 11.4c1.4 1.1 2.5 2.5 3.5 4 2.2-4.3 5.4-8.2 9.8-11.8"/></svg>';
 const RING = '<svg class="ring" viewBox="0 0 50 40"><path d="M27 5.2c-9.8-.9-20.3 4.4-21.4 13.1-1.1 9 8.3 16.3 19.6 16.4 10.9.1 19.9-5.7 19.8-14.2-.1-8.6-9.3-15-20.4-15-3.5.1-6.5.8-9.1 2.2"/></svg>';
@@ -115,7 +117,9 @@ function normalize(d) {
   if (settings.tz !== 'system' && !(tzOK && validTz(settings.tz))) settings.tz = 'system';
   if (settings.miniView !== 'day') settings.miniView = 'list';
   settings.days = clamp(Math.round(+settings.days) || 7, 1, 7);
-  return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', colorIdx: d.colorIdx | 0 };
+  const gone = {};   // 删除记录（同步用）：id → 删除时间
+  if (d.gone && typeof d.gone === 'object') for (const [k, v] of Object.entries(d.gone)) if (v > 0) gone[k] = +v;
+  return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', memoMt: d.memoMt > 0 ? +d.memoMt : 0, gone, colorIdx: d.colorIdx | 0 };
 }
 function loadLocal() { try { return JSON.parse(localStorage.getItem('jian-data')); } catch { return null; } }
 let data = normalize(BOOT.data || (native ? null : loadLocal()));
@@ -125,7 +129,7 @@ const ui = {
   sel: today(),
   day: today(),
   hourH: 44,
-  mini: !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,
+  mini: web || !!BOOT.mini, pinned: !!BOOT.pinned, max: false, autostart: !!BOOT.autostart,   // 手机上就是迷你卡片的样子
   tab: 'todo',
   dayView: data.settings.miniView === 'day',   // 迷你卡片当前显示日程方块视图（只在迷你模式下生效）
   days: data.settings.days,                    // 周视图一屏显示几天（1–7）
@@ -136,8 +140,12 @@ let saveT = 0;
 function save() { clearTimeout(saveT); saveT = setTimeout(flush, 350); }
 function flush() {
   clearTimeout(saveT); saveT = 0;
-  if (native) send('save', { data });
-  else try { localStorage.setItem('jian-data', JSON.stringify(data)); } catch {}
+  const changed = stamp();
+  if (native) send('save', { data, changed });   // changed：本机有改动，原生层据此安排同步
+  else {
+    try { localStorage.setItem('jian-data', JSON.stringify(data)); } catch {}
+    if (changed) syncSoon();
+  }
 }
 const undoStack = [];
 function snap() { undoStack.push(JSON.stringify(data)); if (undoStack.length > 80) undoStack.shift(); }
@@ -146,9 +154,156 @@ function undo() {
   closePop();
   const s = undoStack.pop();
   if (!s) return toast('没有可以撤销的操作了');
-  // 设置（纸色、时区……）和随记不走撤销：保留当前的，免得撤销一次日程把它们也带回旧版本
-  const keep = { settings: data.settings, memo: data.memo };
+  // 设置（纸色、时区……）和随记不走撤销：保留当前的，免得撤销一次日程把它们也带回旧版本；删除记录只增不减
+  const keep = { settings: data.settings, memo: data.memo, memoMt: data.memoMt, gone: data.gone };
   data = normalize(JSON.parse(s)); Object.assign(data, keep); save(); renderAll(); toast('已撤销');
+}
+
+// ───────────────────────── 同步：逐条合并 ─────────────────────────
+// 规则与 syncmerge.py 完全相同（改一边要两边一起改）：每条日程 / 小任务带 mt（最后修改时间），
+// 删除的记入 gone[id] = 删除时间；合并时同一条取后改的，删除时间不早于 mt 的算删掉；随记取 memoMt 较新的。
+// 本机改了哪些不用逐处标记：每次保存前和上次的内容比一比（stamp），变了的盖上当前时间。
+const KEEP_GONE = 120 * 864e5;
+const mtOf = x => (x && x.mt > 0 ? x.mt : 0);
+const bodyOf = x => { const { mt, ...r } = x; return JSON.stringify(r); };
+let stamped = null, stampedMemo = '';
+function restamp() {   // 以当前数据为准记下各条内容（启动时、合并远端之后）：这些不算本机的改动
+  stamped = new Map();
+  for (const x of data.events) stamped.set(x.id, bodyOf(x));
+  for (const x of data.tasks) stamped.set(x.id, bodyOf(x));
+  stampedMemo = data.memo;
+}
+function stamp() {   // 返回本机这次有没有改动
+  if (!stamped) { restamp(); return false; }
+  const now = Date.now(), seen = new Set(); let changed = false;
+  for (const x of data.events.concat(data.tasks)) {
+    seen.add(x.id);
+    const b = bodyOf(x);
+    if (stamped.get(x.id) !== b) { x.mt = now; stamped.set(x.id, b); changed = true; }
+  }
+  for (const id of [...stamped.keys()]) if (!seen.has(id)) { data.gone[id] = now; stamped.delete(id); changed = true; }
+  if (data.memo !== stampedMemo) { data.memoMt = now; stampedMemo = data.memo; changed = true; }
+  return changed;
+}
+const syncPart = d => ({ events: d.events || [], tasks: d.tasks || [], gone: d.gone || {}, memo: d.memo || '', memoMt: d.memoMt || 0 });
+function mergeDocs(a, b, now = Date.now()) {
+  const gone = { ...a.gone };
+  for (const [k, v] of Object.entries(b.gone || {})) if (v > (gone[k] || 0)) gone[k] = v;
+  const out = {};
+  for (const kind of ['events', 'tasks']) {
+    const m = new Map(a[kind].map(x => [x.id, x]));
+    for (const y of b[kind] || []) { const x = m.get(y.id); if (!x || mtOf(y) > mtOf(x)) m.set(y.id, y); }
+    out[kind] = [...m.values()].filter(x => (gone[x.id] ?? -1) < mtOf(x));
+  }
+  out.gone = Object.fromEntries(Object.entries(gone).filter(([, v]) => v >= now - KEEP_GONE));
+  const am = a.memoMt || 0, bmt = b.memoMt || 0;
+  const bm = bmt > am || (bmt === am && (b.memo || '') > (a.memo || ''));   // 时间一样（比如两边都没改过）时比内容，各端结果一致
+  out.memo = bm ? b.memo || '' : a.memo || ''; out.memoMt = bm ? bmt : am;
+  return out;
+}
+const byId = (x, y) => (x.id < y.id ? -1 : 1);
+const canonPart = p => JSON.stringify([[...p.events].sort(byId), [...p.tasks].sort(byId), Object.entries(p.gone).sort(), p.memo, p.memoMt]);
+// 收到另一端（服务器 / 桌面原生层）的数据：合并进来，有变化就重画。正在拖动时先等一等。
+function applyRemote(remote) {
+  if (drag) { setTimeout(() => applyRemote(remote), 800); return false; }
+  stamp();   // 本机还没盖戳的改动先盖上，免得被当成远端的旧数据
+  const mine = syncPart(data), merged = mergeDocs(mine, syncPart(remote));
+  if (canonPart(merged) === canonPart(mine)) return false;
+  const editingMemo = document.activeElement === $('#memo');
+  data = normalize({ ...data, ...merged });
+  restamp(); undoStack.length = 0;   // 撤销只管本机刚做的事，别把别处的改动也撤回去
+  if (!editingMemo) $('#memo').value = data.memo;
+  clearTimeout(saveT); saveT = 0;
+  if (native) send('save', { data, changed: false }); else try { localStorage.setItem('jian-data', JSON.stringify(data)); } catch {}
+  renderAll();
+  return true;
+}
+
+// 手机网页版：和服务器同步。本机一有改动就排一次；打开、回到前台、联网时也同步；开着时每分钟一次。
+let syncInfo = {};   // 桌面：原生层报告的状态；手机：{ ok, at, err, busy }
+const SY = { token: null, busy: false, again: false, timer: 0 };
+try { SY.token = localStorage.getItem('jian-token'); } catch {}
+function syncSoon(ms = 1200) { if (!web) return; clearTimeout(SY.timer); SY.timer = setTimeout(syncNow, ms); }
+async function syncNow() {
+  if (!web) return;
+  if (!SY.token) return showLogin();
+  if (SY.busy) { SY.again = true; return; }
+  SY.busy = true; setSync({ busy: true });
+  const ab = new AbortController(), to = setTimeout(() => ab.abort(), 25000);
+  try {
+    if (saveT) flush(); else stamp();
+    const r = await fetch('api/sync', { method: 'POST', cache: 'no-store', signal: ab.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SY.token }, body: JSON.stringify(syncPart(data)) });
+    if (r.status === 401) { logout('登录已失效，请重新输入同步密码'); return; }
+    if (!r.ok) throw new Error('服务器返回 ' + r.status);
+    applyRemote(await r.json());
+    setSync({ ok: true, at: Date.now() });
+  } catch (e) {
+    setSync({ ok: false, at: syncInfo.at, err: navigator.onLine === false ? '没有网络' : '连不上服务器' });
+    clearTimeout(SY.timer); SY.timer = setTimeout(syncNow, 30000);   // 稍后再试
+  } finally {
+    clearTimeout(to); SY.busy = false;
+    if (SY.again) { SY.again = false; syncSoon(300); }
+  }
+}
+function setSync(st) {
+  syncInfo = { ...syncInfo, busy: false, ...st };
+  const b = $('#syncInd'); if (!b) return;
+  b.classList.toggle('busy', !!syncInfo.busy);
+  b.classList.toggle('bad', !syncInfo.busy && syncInfo.ok === false);
+  b.classList.toggle('ok', !syncInfo.busy && syncInfo.ok === true);
+  b.title = syncText();
+  paintSyncText();
+}
+function paintSyncText() { for (const n of $$('.pop-set .sync-st')) n.textContent = syncText(); }
+function ago(t) {
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`;
+}
+function syncText() {
+  const i = syncInfo;
+  if (i.off) return '未开启';
+  if (i.busy) return '正在同步…';
+  if (i.ok) return `已同步 · ${ago(i.at)}`;
+  if (i.err) return `${i.err}${i.at ? ` · 上次同步 ${ago(i.at)}` : ''}，改动先存在本机`;
+  return native ? '未开启同步' : '还没有同步';
+}
+function showLogin(msg = '') {
+  let box = $('#login');
+  if (!box) {
+    box = el(`<div class="login" id="login"><form class="login-card">
+      <span class="seal-logo">笺</span>
+      <h3>连接你的笺</h3>
+      <p>输入同步密码，手机和电脑上的日程、待办会自动同步。</p>
+      <input type="password" class="login-pw" autocomplete="current-password" placeholder="同步密码" required>
+      <button class="btn solid login-go">进入</button>
+      <div class="login-err"></div>
+    </form></div>`);
+    document.body.appendChild(box);
+    box.querySelector('form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const pw = box.querySelector('.login-pw'), err = box.querySelector('.login-err'), go = box.querySelector('.login-go');
+      go.disabled = true; err.textContent = '';
+      try {
+        const r = await fetch('api/login', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw.value, device: /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : '手机' }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || '登录失败');
+        SY.token = j.token; try { localStorage.setItem('jian-token', j.token); } catch {}
+        pw.value = ''; box.classList.add('out'); setTimeout(() => box.remove(), 260);
+        syncNow();
+      } catch (ex) {
+        err.textContent = ex.name === 'TypeError' ? '连不上服务器，检查一下网络' : ex.message;
+        if (motion) box.querySelector('.login-card').animate([{ translate: '0' }, { translate: '-6px' }, { translate: '5px' }, { translate: '-3px' }, { translate: '0' }], { duration: 320 });
+      } finally { go.disabled = false; }
+    });
+  }
+  box.querySelector('.login-err').textContent = msg;
+  setTimeout(() => box.querySelector('.login-pw').focus(), 50);
+}
+function logout(msg) {
+  SY.token = null; try { localStorage.removeItem('jian-token'); } catch {}
+  setSync({ ok: undefined, at: 0, err: '' }); closePop(); showLogin(msg);
 }
 
 // ───────────────────────── 日程展开 ─────────────────────────
@@ -773,7 +928,8 @@ function createEvent(date, start, end) {
   data.colorIdx = ((data.colorIdx || 0) + 1) % COLORS.length;
   ui.sel = date;
   renderAll();
-  openEvPop(ev.id, date, blocks.get(ev.id + '@' + date), true);
+  const key = ev.id + '@' + date;   // 迷你卡片 / 手机正看日程方块时，浮层指向方块
+  openEvPop(ev.id, date, (ui.mini && ui.dayView && dv.blocks.get(key)) || blocks.get(key), true);
 }
 
 // ───────────────────────── TODO 面板 ─────────────────────────
@@ -943,8 +1099,10 @@ document.addEventListener('focusout', e => {
   if (t.classList && t.classList.contains('add-in') && !t.value.trim())
     setTimeout(() => { if (document.activeElement !== t) t.closest('.add')?.classList.remove('adding'); }, 150);
 });
-document.addEventListener('dblclick', e => {   // 双击修改任务文字
-  const tx = e.target.closest('.tx-in'); if (!tx || tx.isContentEditable) return;
+document.addEventListener('dblclick', e => editText(e.target.closest('.tx-in')));   // 双击修改任务文字
+if (web) document.addEventListener('click', e => editText(e.target.closest('.tx-in')));   // 手机上没有双击：点一下文字就改
+function editText(tx) {
+  if (!tx || tx.isContentEditable) return;
   const id = tx.closest('.task').dataset.id, orig = tx.textContent;
   tx.contentEditable = 'plaintext-only'; tx.focus();
   getSelection().selectAllChildren(tx);
@@ -964,12 +1122,13 @@ document.addEventListener('dblclick', e => {   // 双击修改任务文字
   };
   const onBlur = () => finish(true);
   tx.addEventListener('keydown', onKey); tx.addEventListener('blur', onBlur);
-});
+}
 
 // ───────────────────────── 浮层 ─────────────────────────
 let pop = null;
 const layer = $('#layer');
 function placePop(p, r, prefer) {
+  if (web) return;   // 手机上浮层是贴底的卡片，位置交给 CSS
   const W = innerWidth, H = innerHeight, m = 16, w = p.offsetWidth, h = p.offsetHeight;
   let x, y;
   if (prefer === 'below') {
@@ -1244,11 +1403,12 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     <div class="set-main">
     <h4>设置</h4>
     <div class="set-row th-row"><span class="lab">纸色</span><div class="themes">${THEMES.map(([k, n, c]) => `<button class="th${s.theme === k ? ' on' : ''}" data-th="${k}" style="background:${c}"><span>${n}</span></button>`).join('')}</div></div>
-    <div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>
+    ${web ? '' : `<div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>`}
     <div class="set-row"><span class="lab">一屏显示</span><div class="stepper"><button data-st="ds-1">−</button><b class="dsv">${pad(s.dayStart)}:00</b><button data-st="ds1">+</button><span style="color:var(--ink-3);margin:0 2px">至</span><button data-st="de-1">−</button><b class="dev">${pad(s.dayEnd)}:00</b><button data-st="de1">+</button></div></div>
     ${tzOK ? '<div class="set-row"><span class="lab">时区</span><button class="tz-cur" title="笺按哪里的时间显示日程、发出提醒"></button></div>' : ''}
-    <div class="set-row"><span class="lab">开机后在后台待命</span><button class="switch${ui.autostart ? ' on' : ''}" title="登录后自动在后台启动，以便准时提醒"></button></div>
-    <div class="set-row"><span class="lab">数据</span><button class="link open-data">打开数据文件夹</button></div>
+    <div class="set-row"><span class="lab">同步</span><span class="sync-st"></span>${web ? '<button class="link sync-now">立即同步</button>' : ''}</div>
+    ${web ? '<div class="set-row"><span class="lab">这台设备</span><button class="link logout">退出登录</button></div>' : `<div class="set-row"><span class="lab">开机后在后台待命</span><button class="switch${ui.autostart ? ' on' : ''}" title="登录后自动在后台启动，以便准时提醒"></button></div>
+    <div class="set-row"><span class="lab">数据</span><button class="link open-data">打开数据文件夹</button></div>`}
     <div class="keys"><kbd>←</kbd><kbd>→</kbd>翻周　<kbd>T</kbd>回到今天　<kbd>N</kbd>新待办<br><kbd>M</kbd>迷你卡片　<kbd>P</kbd>置顶　<kbd>Ctrl</kbd>+<kbd>Z</kbd>撤销<br><kbd>Esc</kbd>隐藏到后台　<kbd>Ctrl</kbd>+<kbd>Q</kbd>彻底退出</div>
     <div class="ver">笺 v${esc(BOOT.version || 'dev')}</div>
     </div>
@@ -1260,6 +1420,7 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     </div>
   </div>`);
   const main = $('.set-main', p), tzp = $('.set-tz', p), q = $('.tz-q', p), list = $('.tz-list', p);
+  $('.sync-st', p).textContent = syncText();
   let hi = -1;   // 键盘 ↑↓ 选中的那一行
   const paintCur = () => {
     const b = $('.tz-cur', p);
@@ -1329,6 +1490,8 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     }
     if (t.closest('.switch')) { ui.autostart = !ui.autostart; t.closest('.switch').classList.toggle('on', ui.autostart); send('setAutostart', { on: ui.autostart }); return; }
     if (t.closest('.open-data')) { send('openDataDir'); if (!native) toast('预览模式下数据保存在浏览器里'); }
+    if (t.closest('.sync-now')) { syncNow(); return; }
+    if (t.closest('.logout')) { logout(); return; }
   });
   openPop(p, anchor.getBoundingClientRect(), 'below', { kind: 'settings', tick: () => { paintCur(); if (!tzp.hidden) retime(); } });
   if (page === 'tz') showPage(true, false);
@@ -1415,6 +1578,7 @@ function togglePin() {
   send('setPinned', { pinned: ui.pinned }); if (!native) toast('预览模式不支持置顶');
 }
 function toggleMini() {
+  if (web) return;
   closePop();
   if (!native) return onMode({ mini: !ui.mini, pinned: ui.pinned });
   document.body.classList.add('switching');
@@ -1501,8 +1665,9 @@ function renderAll() { renderHeader(); renderDays(); renderGrid(); renderTodo();
 
 function init() {
   const icons = { prevWeek: I.left, nextWeek: I.right, settingsBtn: I.set, pinBtn: I.pin, miniBtn: I.mini, minBtn: I.min, closeBtn: I.close,
-    prevDay: I.left, nextDay: I.right, dayBtn: I.day, pinBtn2: I.pin, expandBtn: I.expand, closeBtn2: I.close };
+    prevDay: I.left, nextDay: I.right, dayBtn: I.day, pinBtn2: I.pin, expandBtn: I.expand, closeBtn2: I.close, syncInd: I.cloud, setBtn2: I.set };
   for (const [id, svg] of Object.entries(icons)) $('#' + id).innerHTML = svg;
+  restamp();   // 以启动时的数据为基准，之后的改动才算本机修改
   applyTheme(); buildGrid();
   if (BOOT.opaque) document.body.classList.add('opaque');
   document.body.classList.toggle('mini', ui.mini);
@@ -1524,10 +1689,20 @@ function init() {
   $('#daysHead').addEventListener('click', e => { const h = e.target.closest('.dh'); if (h && h.dataset.date) selectDay(h.dataset.date); });
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
   $('#dayBtn').onclick = () => setDayView(!ui.dayView);
-  $('#dvCol').addEventListener('click', e => {   // 点日程方块：回到待办列表，闪一下它的小任务
+  $('#setBtn2').onclick = e => { if (closedKind !== 'settings') openSettings(undefined, e.currentTarget); };
+  $('#syncInd').onclick = () => { toast(syncText()); syncNow(); };
+  $('#dvCol').addEventListener('click', e => {
     const c = e.target.closest('.ev-chk'); if (c) return blockCheck(c);   // 勾方块里的小任务：留在日程视图
-    const b = e.target.closest('.ev'); if (!b) return;
-    setDayView(false); flashGroup(b.dataset.key);
+    const b = e.target.closest('.ev');
+    if (web) {   // 手机：点方块编辑这个日程；点空白处在那个时刻新建一小时
+      if (b) return openEvPop(b.dataset.id, b.dataset.date, b);
+      if (downClosedPop) return;
+      const m = dv.a * 60 + (e.clientY - $('#dvBody').getBoundingClientRect().top) / dv.hh * 60;
+      const st = clamp(floorTo(m, 30), 0, 1380);
+      return createEvent(ui.sel, st, st + 60);
+    }
+    if (!b) return;
+    setDayView(false); flashGroup(b.dataset.key);   // 迷你卡片：回到待办列表，闪一下它的小任务
   });
   // Ctrl+滚轮：往上滚放大（少显示一天），往下滚缩小（多显示一天）；不按 Ctrl 照常上下滚
   $('#week').addEventListener('wheel', e => {
@@ -1552,11 +1727,31 @@ function init() {
   document.fonts && document.fonts.ready.then(() => { twCache.clear(); fontFam = ''; renderGrid(true); renderDayView(); moveInd(); reportDragSoon(); });
   setTimeout(() => { tick(); setInterval(tick, 60000); }, 60300 - Date.now() % 60000);
   if (motion) $('#frame').animate([{ opacity: 0, transform: 'translateY(10px) scale(.99)' }, { opacity: 1, transform: 'none' }], { duration: 460, easing: EASE });
+  if (web) {   // 手机：离线可用（Service Worker 缓存界面），打开、回到前台、联网时同步，开着时每分钟一次
+    let stale = false;   // 服务器上有了新版本：等下次回到前台时自动刷新（数据都已存在本机）
+    if ('serviceWorker' in navigator) {
+      const hadSW = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW) stale = true; });
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { if (saveT) flush(); return; }
+      if (stale && !pop && !drag && document.activeElement === document.body) { location.reload(); return; }
+      tick(); syncSoon(200);
+      if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
+    });
+    addEventListener('online', () => syncSoon(200));
+    setInterval(() => { if (!document.hidden) syncNow(); }, 60000);
+    setInterval(() => { if ($('#syncInd')) $('#syncInd').title = syncText(); }, 30000);
+    syncNow();
+  }
   send('ready');
 }
 
 window.App = {
-  dump() { clearTimeout(saveT); saveT = 0; return JSON.stringify(data); },
+  dump() { clearTimeout(saveT); saveT = 0; stamp(); return JSON.stringify(data); },
+  applyRemote(remote) { return applyRemote(remote); },   // 桌面原生层同步到服务器上的改动
+  syncState(st) { syncInfo = st || {}; paintSyncText(); },   // 桌面原生层报告同步状态（设置里显示）
   onMode, onWindowState,
   onShow() { tick(); reportDragSoon(); },
   setAutostart(on) { ui.autostart = !!on; },
