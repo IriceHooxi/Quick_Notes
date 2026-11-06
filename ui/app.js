@@ -207,7 +207,7 @@ function enter(n) {
   const h = n.offsetHeight; n.style.overflow = 'hidden';
   n.animate([{ height: '0px', opacity: 0, transform: 'translateY(-4px)' }, { height: h + 'px', opacity: 1, transform: 'none' }],
     { duration: 260, easing: EASE }).onfinish = () => { n.style.overflow = ''; };
-  if (n.classList.contains('task')) writeIn(n);
+  if (n.classList.contains('task') || n.classList.contains('ev-tk')) writeIn(n);
 }
 function leave(n) {   // 先向右轻轻拂去，再收起高度
   n._leaving = true; n.style.pointerEvents = 'none'; n.style.overflow = 'hidden';
@@ -232,12 +232,13 @@ function fxDot(cls, x, y, size, color) {   // 在动效层放一个一次性的�
 function inkCheck(chk) {   // 勾选：方框四周洇开一圈淡墨，勾的笔锋处甩出几粒墨点
   if (!motion || !chk) return;
   const r = chk.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
-  fxOnce(fxDot('fx-bloom', x, y, 40, 'var(--accent)').animate([   // 先很快洇开，再慢慢淡掉
+  const k = (chk.querySelector('svg')?.getBoundingClientRect().width || 22) / 22;   // 日程块里的小方框：墨晕和墨点按比例缩小
+  fxOnce(fxDot('fx-bloom', x, y, 40 * k, 'var(--accent)').animate([   // 先很快洇开，再慢慢淡掉
     { scale: .3, opacity: .95, easing: OUT }, { scale: 1.05, opacity: .8, offset: .4, easing: 'ease-in' }, { scale: 1.3, opacity: 0 },
   ], { duration: 600, delay: 40, fill: 'backwards' }));
   for (let i = 0; i < 3; i++) {
-    const a = (-80 + i * 38 + (Math.random() - .5) * 18) * Math.PI / 180, d = 9 + Math.random() * 6;
-    fxOnce(fxDot('fx-speck', x + 8.5, y - 7.5, 3.6 - i * .6, 'var(--accent)').animate([
+    const a = (-80 + i * 38 + (Math.random() - .5) * 18) * Math.PI / 180, d = (9 + Math.random() * 6) * (.4 + .6 * k);
+    fxOnce(fxDot('fx-speck', x + 8.5 * k, y - 7.5 * k, (3.6 - i * .6) * Math.max(k, .7), 'var(--accent)').animate([
       { translate: '0 0', opacity: 0 }, { opacity: .85, offset: .2 },
       { translate: `${Math.cos(a) * d}px ${Math.sin(a) * d}px`, opacity: 0, scale: .5 },
     ], { duration: 460, delay: 190 + i * 35, easing: OUT, fill: 'backwards' }));
@@ -245,7 +246,7 @@ function inkCheck(chk) {   // 勾选：方框四周洇开一圈淡墨，勾的�
   chk.querySelector('svg')?.animate([{ scale: 1 }, { scale: 1.16 }, { scale: 1 }], { duration: 340, easing: OUT });
 }
 function writeIn(li) {   // 新任务：方框一笔画出来，文字从左往右“写”出来
-  const box = li.querySelector('.box'), tx = li.querySelector('.tx'), t = li.querySelector('.tx-in');
+  const box = li.querySelector('.box'), tx = li.querySelector('.tx, .ev-tx'), t = li.querySelector('.tx-in, .ev-tx-in');
   try {
     const L = Math.ceil(box.getTotalLength()) + 'px'; box.style.strokeDasharray = L;
     box.animate([{ strokeDashoffset: L }, { strokeDashoffset: '0px' }], { duration: 420, easing: 'cubic-bezier(.45,.05,.35,1)' }).onfinish = () => { box.style.strokeDasharray = ''; };
@@ -406,7 +407,7 @@ function zoomTip(text) {
 // 只看一天：“一屏显示”的时段（有日程落在外面就自动放宽）整段铺满，日程是方块，一眼看清这一天怎么排的。
 // 点一个方块：回到待办列表并闪一下这个日程的小任务。
 const dv = { hh: 0, a: 7, b: 23, gk: '', blocks: new Map() };
-function renderDayView(flip) {
+function renderDayView(flip, animate = false) {
   if (!(ui.mini && ui.dayView)) return;
   const ds = ui.sel, td = today(), nm = nowMin(), occs = layoutCols(occsOn(ds)), dayTasks = data.tasks.filter(t => t.date === ds);
   let a = data.settings.dayStart, b = data.settings.dayEnd;
@@ -421,8 +422,9 @@ function renderDayView(flip) {
   for (const o of occs) {
     seen.add(o.key);
     let n = dv.blocks.get(o.key);
-    if (!n) { n = document.createElement('div'); n.className = 'ev'; dv.blocks.set(o.key, n); col.appendChild(n); }
-    fillBlock(n, o, dayTasks, td, nm, view);
+    const fresh = !n;
+    if (fresh) { n = document.createElement('div'); n.className = 'ev'; dv.blocks.set(o.key, n); col.appendChild(n); }
+    fillBlock(n, o, dayTasks, td, nm, view, fresh || !animate);
   }
   for (const [k, n] of dv.blocks) if (!seen.has(k)) { n.remove(); dv.blocks.delete(k); }
   const now = $('#dvNow'), on = ds === td && nm >= a * 60 && nm <= b * 60;
@@ -483,7 +485,7 @@ function renderGrid(instant = false) {
       let b = blocks.get(o.key); const fresh = !b;
       if (fresh) { b = document.createElement('div'); b.className = 'ev'; blocks.set(o.key, b); }
       if (b.parentNode !== col) col.appendChild(b);
-      fillBlock(b, o, dayTasks, td, nm);
+      fillBlock(b, o, dayTasks, td, nm, undefined, instant || fresh);
       if (fresh && !instant && motion) inkFill(b);
       if (b._lift && !b.classList.contains('dragging')) land(b);   // 兜底：拖动结束总要落定
     }
@@ -500,10 +502,36 @@ function renderGrid(instant = false) {
   if (pop && pop.kind === 'ev') blocks.get(pop.key)?.classList.add('active');
   updateNow();
 }
+// 日程块里的小任务：放得下几行就列几行；放不下时没做完的排前面，末行右边标“+N”。方框可以直接勾。
+const LH_T = 16.5, LH_TM = 14.6, ROW_H = 16;   // 标题一行 / 时间一行 / 小任务一行的高度（px）
+const twCache = new Map(), tctx = document.createElement('canvas').getContext('2d');
+let fontFam = '';
+function textW(str, px) {   // 估算一段文字有多宽，用来推算标题会折成几行
+  const k = px + '|' + str; let w = twCache.get(k);
+  if (w == null) {
+    if (!fontFam) fontFam = getComputedStyle(document.body).fontFamily;
+    tctx.font = `${px}px ${fontFam}`; w = tctx.measureText(str).width;
+    if (twCache.size > 600) twCache.clear();
+    twCache.set(k, w);
+  }
+  return w;
+}
+const lines = (str, px, w) => Math.max(1, Math.ceil(textW(str, px) * 1.04 / Math.max(w, 1)));
+function makeEvTask() {
+  return el(`<li class="ev-tk"><button class="ev-chk" title="完成 / 取消完成">${BOX}</button><span class="ev-tx"><span class="ev-tx-in"></span></span><span class="ev-plus" hidden></span></li>`);
+}
+function fillEvTask(n, t, more) {   // more：这一行是末行、后面还有几项没列出来
+  n.classList.toggle('done', !!t.done);
+  const s = n.querySelector('.ev-tx-in'); if (s.textContent !== t.text) s.textContent = t.text;
+  n.title = t.text;
+  const p = n.lastChild, txt = more ? `+${more.n}` : '';
+  p.hidden = !more; if (p.textContent !== txt) p.textContent = txt;
+  p.title = more ? `还有 ${more.n} 项小任务` + (more.open ? `（${more.open} 项没做完）` : '，都已完成') : '';
+}
 // view：哪种视图在画这个块——每小时多高、列多宽、时间从几点算起（off 分钟）、要不要拉伸手柄
-function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW, off: 0, grip: true }) {
-  const ev = o.ev, ts = dayTasks.filter(t => t.eventId === ev.id), dn = ts.filter(t => t.done).length;
-  const px = (o.end - o.start) * view.hh / 60;
+function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW, off: 0, grip: true }, instant = true) {
+  const ev = o.ev, ts = dayTasks.filter(t => t.eventId === ev.id).sort(byOrder), dn = ts.filter(t => t.done).length;
+  const raw = (o.end - o.start) * view.hh / 60, px = Math.max(18, raw - 2);   // raw：这段时间多高；px：块实际多高
   b.dataset.key = o.key; b.dataset.id = ev.id; b.dataset.date = o.date;
   const st = b.style;
   st.setProperty('--s', o.start - view.off); st.setProperty('--e', o.end - view.off);
@@ -511,17 +539,49 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   st.setProperty('--c', `var(--c-${ev.color || 'dai'})`);
   b.classList.toggle('past', o.date < td || (o.date === td && o.end <= nm));
   b.classList.toggle('live', o.date === td && o.start <= nm && nm < o.end);
-  b.classList.toggle('short', px < 38);
-  b.classList.toggle('tiny', px < 22);
-  // 标题最多占几行：给时间留出位置（窄块里时间可能折成两行）
-  const timeLines = view.colW / o.ncol < 82 ? 2 : 1;
-  st.setProperty('--lines', clamp(Math.floor((px - 7 - 15 * timeLines) / 16.5), 1, 4));
+  b.classList.toggle('short', raw < 38);
+  b.classList.toggle('tiny', raw < 22);
+  if (b._sk !== view.grip) {   // 骨架只搭一次；各部分分别更新，小任务行跨渲染复用，勾选才有过渡
+    b.innerHTML = `<div class="ev-t"></div><div class="ev-tm"></div><ul class="ev-ts"></ul><div class="ev-badge" hidden></div>${view.grip ? '<div class="ev-grip"></div>' : ''}`;
+    b._sk = view.grip; b._t = b._tm = null;
+  }
+  const [tEl, tmEl, list, badge] = b.children;
   const rep = ev.repeat && ev.repeat !== 'none';
-  const html = `<div class="ev-t">${ev.title ? esc(ev.title) : '<span class="ph">未命名</span>'}</div>`
-    + `<div class="ev-tm">${hm(o.start)}–${hm(o.end)}${rep ? ' <i class="rep">↻</i>' : ''}</div>`
-    + (ts.length ? `<div class="ev-badge${dn === ts.length ? ' all' : ''}">${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}</div>` : '')
-    + (view.grip ? '<div class="ev-grip"></div>' : '');
-  if (b._html !== html) { b.innerHTML = html; b._html = html; }
+  const tHtml = ev.title ? esc(ev.title) : '<span class="ph">未命名</span>';
+  const tmHtml = `${hm(o.start)}–${hm(o.end)}${rep ? ' <i class="rep">↻</i>' : ''}`;
+  if (b._t !== tHtml) { tEl.innerHTML = tHtml; b._t = tHtml; }
+  if (b._tm !== tmHtml) { tmEl.innerHTML = tmHtml; b._tm = tmHtml; }
+
+  // 排版：块里净空多高、多宽（块宽减去 5px 间隙和左右内边距；底边留出拉伸手柄）
+  const inW = view.colW / o.ncol - 20, inH = px - 7 - (view.grip ? 4 : 0), tmStr = `${hm(o.start)}–${hm(o.end)}${rep ? ' ↻' : ''}`;
+  const tmLines = clamp(lines(tmStr, 11, inW), 1, 2);
+  let tl = clamp(Math.floor((raw - 7 - LH_TM * tmLines) / LH_T), 1, 4), items = [], more = null, inl = false, noTm = false;
+  if (ts.length && raw >= 38 && inW >= 60) {
+    // 地方让给小任务：块够宽时标题和时间并成一行；不够宽时标题最多两行，挤不下再只留一行；
+    // 还是连一行小任务都放不下，就收起时间（块的位置本身就说明了时间）
+    inl = (textW(ev.title || '未命名', 12.5) + textW(tmStr, 11)) * 1.04 + 8 <= inW;
+    const head = (n, tm) => inl ? LH_T : n * LH_T + (tm ? tmLines * LH_TM : 0);
+    const room = (n, tm = true) => Math.floor((inH - head(n, tm) - 2) / ROW_H);
+    tl = inl ? 1 : Math.min(lines(ev.title || '未命名', 12.5, inW), 2);
+    if (tl > 1 && room(tl) < ts.length) tl = 1;
+    if (!inl && room(tl) < 1 && room(tl, false) >= 1) noTm = true;
+    const R = Math.max(0, room(tl, !noTm));
+    if (R >= ts.length) items = ts;
+    else if (R) {
+      const order = [...ts.filter(t => !t.done), ...ts.filter(t => t.done)], rest = order.slice(R);
+      items = order.slice(0, R);
+      more = { n: rest.length, open: rest.filter(t => !t.done).length };
+    }
+  }
+  b._ovf = !!more;   // 没放下全部：勾掉的会让位给还没做的
+  b.classList.toggle('inl', inl); b.classList.toggle('notm', noTm);
+  st.setProperty('--lines', tl);
+  const last = items[items.length - 1];
+  reconcile(list, items, t => t.id, makeEvTask, (n, t) => fillEvTask(n, t, t === last ? more : null), instant || !motion);
+  // 列不出小任务时（块太矮 / 太窄），右下角还是显示完成了几项
+  const bt = ts.length && !items.length ? `${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}` : '';
+  badge.hidden = !bt; badge.classList.toggle('all', dn === ts.length);
+  if (badge.textContent !== bt) badge.textContent = bt;
   b.title = `${ev.title || '未命名'}  ${hm(o.start)}–${hm(o.end)}${rep ? '（重复）' : ''}${ev.note ? '\n' + ev.note : ''}`;
 }
 function updateNow() {
@@ -548,6 +608,7 @@ const floorTo = (m, s) => Math.floor(m / s) * s;
 
 colsEl.addEventListener('pointerdown', e => {
   if (e.button !== 0 || drag) return;
+  if (e.target.closest('.ev-chk')) { e.preventDefault(); return; }   // 勾块里的小任务：不拖动、不开浮层
   const b = e.target.closest('.ev');
   if (downClosedPop && !b) return;              // 这次点击只是为了关掉浮层
   e.preventDefault();
@@ -570,6 +631,7 @@ colsEl.addEventListener('pointermove', e => {
 });
 colsEl.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pid) dragEnd(); });
 colsEl.addEventListener('pointercancel', () => { if (drag) dragCancel(); });
+colsEl.addEventListener('click', e => { const c = e.target.closest('.ev-chk'); if (c) blockCheck(c); });
 
 function dragMove() {
   const d = drag;
@@ -605,7 +667,7 @@ function dragMove() {
   d.b.style.setProperty('--s', d.start); d.b.style.setProperty('--e', d.end);
   const tm = d.b.querySelector('.ev-tm');
   if (tm) tm.textContent = (d.day !== d.day0 ? `周${WD[addDays(ui.week, d.day).getDay()]} ` : '') + `${hm(d.start)}–${hm(d.end)}`;
-  d.b._html = null;
+  d.b._tm = null;
 }
 let asV = 0, asH = 0, asRAF = 0, asSlid = false;
 function autoScroll(x, y) {   // 拖到上下边缘：上下滚；只显示几天时拖到左右边缘：滚到相邻的日子
@@ -651,11 +713,11 @@ function dragEnd() {
 }
 function dragCancel() { const d = drag; drag = null; asV = asH = 0; snapBack(); if (d.g) d.g.remove(); if (d.b) dragRevert(d); }
 function dragRevert(d) {
-  d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._html = null; land(d.b); renderGrid(true);
+  d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._tm = null; land(d.b); renderGrid(true);
   if (pop) pop.el.classList.remove('dim');
 }
 function settle(b) {   // 拖放落定：取消变换且本帧不做过渡，避免“弹回再飞过去”
-  b.classList.add('noanim'); b.classList.remove('dragging'); b.style.removeProperty('--dx'); b._html = null;
+  b.classList.add('noanim'); b.classList.remove('dragging'); b.style.removeProperty('--dx'); b._tm = null;
   requestAnimationFrame(() => requestAnimationFrame(() => b.classList.remove('noanim')));
 }
 function applyMove(d, newDate, scope) {
@@ -684,7 +746,7 @@ function applyMove(d, newDate, scope) {
       } else newKey = d.key;
     }
     blocks.delete(d.key); blocks.set(newKey, d.b);
-    if (newKey === d.key) { d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._html = null; }
+    if (newKey === d.key) { d.b.classList.remove('dragging'); d.b.style.removeProperty('--dx'); d.b._tm = null; }
     else settle(d.b);
     if (ui.sel === d.occDate) ui.sel = newDate;
     if (own) { own.key = newKey; own.date = newKey.split('@')[1]; }
@@ -755,7 +817,7 @@ function renderTodo() {
   if (flip) $('#todoBody').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
   lastSel = ds;
   renderNowNext();
-  renderDayView(flip);
+  renderDayView(flip, !dayChanged);
 }
 function renderNowNext() {
   const box = $('#nownext'), td = today(), occs = occsOn(ui.sel);
@@ -818,15 +880,20 @@ function fillTask(li, t, g) {
 function addTask(G, text) {
   commit(() => data.tasks.push({ id: uid(), text, done: false, eventId: G.evId || null, date: G.date, order: Date.now() }));
 }
-function toggleTask(id, li, G) {
-  const t = data.tasks.find(x => x.id === id); if (!t) return;
-  if (!t.done) inkCheck(li.querySelector('.chk'));
-  if (G.kind === 'carry' && !t.done) {          // 先让勾选动画播完，再从“没做完”里移走
-    li.classList.add('done');
-    setTimeout(() => commit(() => { t.done = true; t.doneAt = Date.now(); }), 650);
+function toggleTask(id, li, G, linger = G.kind === 'carry') {
+  const t = data.tasks.find(x => x.id === id); if (!t || li._linger) return;
+  if (!t.done) inkCheck(li.querySelector('.chk, .ev-chk'));
+  if (linger && !t.done) {          // 勾掉后这一行会挪走（“没做完的”、放不下全部的日程块）：先让勾选动画播完
+    li.classList.add('done'); li._linger = true;
+    setTimeout(() => { li._linger = false; commit(() => { t.done = true; t.doneAt = Date.now(); }); }, 650);
     return;
   }
   commit(() => { t.done = !t.done; t.doneAt = t.done ? Date.now() : null; });
+}
+function blockCheck(chk) {   // 在日程块里直接勾小任务
+  const li = chk.closest('.ev-tk'), b = chk.closest('.ev'); if (!li || !b || !li.dataset.k) return;
+  const t = data.tasks.find(x => x.id === li.dataset.k); if (!t) return;
+  toggleTask(t.id, li, { kind: 'ev' }, b._ovf);
 }
 function deleteTask(id) {
   const t = data.tasks.find(x => x.id === id); if (!t) return;
@@ -1451,6 +1518,7 @@ function init() {
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
   $('#dayBtn').onclick = () => setDayView(!ui.dayView);
   $('#dvCol').addEventListener('click', e => {   // 点日程方块：回到待办列表，闪一下它的小任务
+    const c = e.target.closest('.ev-chk'); if (c) return blockCheck(c);   // 勾方块里的小任务：留在日程视图
     const b = e.target.closest('.ev'); if (!b) return;
     setDayView(false); flashGroup(b.dataset.key);
   });
@@ -1474,7 +1542,7 @@ function init() {
   new ResizeObserver(() => renderDayView()).observe($('#dvScroll'));
   addEventListener('resize', () => { moveInd(); reportDragSoon(); if (pop) placePop(pop.el, pop.rect, pop.prefer); });
   requestAnimationFrame(() => { fitHours(false); fitDays(true); renderGrid(true); moveInd(); reportDragSoon(); });
-  document.fonts && document.fonts.ready.then(() => { moveInd(); reportDragSoon(); });
+  document.fonts && document.fonts.ready.then(() => { twCache.clear(); fontFam = ''; renderGrid(true); renderDayView(); moveInd(); reportDragSoon(); });
   setTimeout(() => { tick(); setInterval(tick, 60000); }, 60300 - Date.now() % 60000);
   if (motion) $('#frame').animate([{ opacity: 0, transform: 'translateY(10px) scale(.99)' }, { opacity: 1, transform: 'none' }], { duration: 460, easing: EASE });
   send('ready');
