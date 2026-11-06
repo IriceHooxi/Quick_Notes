@@ -727,6 +727,9 @@ body.web #week { --gutter: 42px; padding: 0 calc(env(safe-area-inset-right) + 2p
 body.web .dh .dn { font-size: 21px; }
 /* 按住拿起日程时，别弹出系统的放大镜和菜单；拉长用的把手加高，指尖好按 */
 body.web #cols, body.web #cols .ev { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* 电脑上周网格是 touch-action: none（触屏拖动时浏览器别插手）；手机上要能上下左右滑，
+   只拦住浏览器自带的整页缩放（捏合由脚本处理：调一屏几天）；按住拿起后再由脚本拦下滚动 */
+body.web .cols, body.web .cols .ev { touch-action: pan-x pan-y; }
 body.web .ev-grip { height: 14px; }
 body.web .ev-grip::after { opacity: .3; }
 
