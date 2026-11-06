@@ -580,7 +580,7 @@ function scrollX(x) { scroller.scrollLeft = x; $('#daysHead').scrollLeft = scrol
 function fitDays(reset) {   // 窗口宽度变了：重算列宽，最左边还是原来那天
   const W = scroller.clientWidth - gutW(); if (W <= 0) return;
   const first = reset || !colw ? startFor(diffDays(ymd(ui.week), ui.sel)) : firstVis();
-  cancelAnimationFrame(colAnim); if (!asSlid) document.body.classList.remove('hfree');
+  cancelAnimationFrame(colAnim); colAnim = 0; if (!asSlid) document.body.classList.remove('hfree');
   setColW(W / ui.days); scrollX(clamp(first, 0, 7 - ui.days) * colw);
 }
 function revealDay(ds, smooth = true) {   // 选中的那天不在眼前时，横向滚过去
@@ -591,8 +591,9 @@ function revealDay(ds, smooth = true) {   // 选中的那天不在眼前时，�
 }
 function setDays(n, clientX) {
   n = clamp(n, 1, 7);
-  if (n !== ui.days && colw) {
-    const W = scroller.clientWidth - gutW(), from = colw, to = W / n, r = scroller.getBoundingClientRect();
+  const W = scroller.clientWidth - gutW();
+  if (colw && (n !== ui.days || Math.abs(colw - W / n) > .5)) {   // 捏合松手时天数可能没变，但列宽停在半路：也要过渡回整数天
+    const from = colw, to = W / n, r = scroller.getBoundingClientRect();
     const ax = clientX == null ? W / 2 : clamp(clientX - r.left - gutW(), 0, W);   // 锚点：指针在列区里的横向位置
     const at = (scroller.scrollLeft + ax) / from;                                    // 指针下是第几天（带小数）
     const l0 = scroller.scrollLeft / from, l1 = clamp(Math.round(at - ax / to), 0, 7 - n);
@@ -606,9 +607,12 @@ function setDays(n, clientX) {
       const p = dur ? Math.min(1, (now - t0) / dur) : 1, e = 1 - (1 - p) ** 3, w = from + (to - from) * e;
       setColW(w); scrollX((l0 + (l1 - l0) * e) * w);
       if (p < 1) colAnim = requestAnimationFrame(step);
-      else { document.body.classList.remove('hfree'); renderGrid(true); }
+      else { colAnim = 0; document.body.classList.remove('hfree'); renderGrid(true); }
     };
     if (dur) colAnim = requestAnimationFrame(step); else step(t0);
+  } else if (colw && !colAnim && !asSlid) {   // 列宽已经到位：收尾（捏合松手刚好停在整数天时，横向对齐到整列）
+    setColW(W / n); document.body.classList.remove('hfree');
+    scroller.scrollTo({ left: clamp(firstVis(), 0, 7 - n) * colw, behavior: motion ? 'smooth' : 'auto' });
   }
   zoomTip(n === 7 ? '一周 7 天' : web ? `一屏 ${n} 天` : `显示 ${n} 天　Ctrl+0 回到一周`);
 }
@@ -1041,7 +1045,7 @@ function renderTodo() {
   const dateEl = $('#todoDate');
   if (dateEl._html !== dateHtml) {
     dateEl.innerHTML = dateHtml; dateEl._html = dateHtml;
-    if (dayChanged && lastSel !== null && motion)   // 换天像翻日历：往后翻新日期从下方上来，往回翻从上方下来
+    if (dayChanged && lastSel !== null && motion && !quietDay)   // 换天像翻日历：往后翻新日期从下方上来，往回翻从上方下来
       [...dateEl.children].forEach((c, i) => c.animate([{ translate: `0 ${ds > lastSel ? 10 : -10}px`, opacity: 0 }, { translate: '0 0', opacity: 1 }],
         { duration: 320, delay: i * 45, easing: EASE, fill: 'backwards' }));
   }
@@ -1072,7 +1076,7 @@ function renderTodo() {
   }
   seal.title = complete ? '这一天的待办全部完成' : '';
   lastComplete = complete;
-  const flip = dayChanged && lastSel !== null && motion;
+  const flip = dayChanged && lastSel !== null && motion && !quietDay;
   if (flip) $('#todoBody').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
   lastSel = ds;
   renderNowNext();
@@ -1244,15 +1248,67 @@ function openPop(p, rect, prefer, extra) {
   closePop();
   layer.appendChild(p);
   placePop(p, rect, prefer);
+  if (web) sheetDrag(p);
   return (pop = { el: p, rect, prefer, ...extra });
 }
 function closePop() {
   if (!pop) return;
   const p = pop; pop = null;
   if (p.onClose) p.onClose(p);
-  p.el.classList.add('out');
-  setTimeout(() => p.el.remove(), 170);
+  const n = p.el;
+  if (n._dropY != null && motion) {   // 手机上被手指拖下去的卡片：从松手的位置接着滑下去
+    n.style.pointerEvents = 'none';
+    n.animate([{ transform: `translateY(${n._dropY}px)` }, { transform: `translateY(${n.offsetHeight + 24}px)`, opacity: .5 }],
+      { duration: 220, easing: 'cubic-bezier(.3,.6,.5,1)', fill: 'forwards' }).onfinish = () => n.remove();
+  } else if (n._dropY != null) n.remove();
+  else { n.classList.add('out'); setTimeout(() => n.remove(), 170); }
   for (const b of $$('.ev.active')) b.classList.remove('active');
+}
+// 手指的速度（px/ms）：看最近约 80ms 走了多远，免得一两个抖动的点把“甩”判错；松手前停住超过 100ms 就当没在甩
+function fingerVel() {
+  const pts = [];
+  return {
+    add(v) { const t = performance.now(); pts.push([t, v]); while (pts.length > 2 && t - pts[0][0] > 80) pts.shift(); },
+    get() {
+      if (pts.length < 2) return 0;
+      const [t0, a] = pts[0], [t1, b] = pts[pts.length - 1];
+      return performance.now() - t1 > 100 || t1 - t0 < 8 ? 0 : (b - a) / (t1 - t0);
+    },
+  };
+}
+// 手机上的卡片（贴底）：按住往下拖，卡片跟着手指走；拖过三分之一高、或者往下一甩就收起，不够就弹回去。
+// 卡片里的内容往上滚过时不接手，留给滚动；往上拖只动一点点，像拉橡皮筋。
+function sheetDrag(p) {
+  let s = null;
+  const scrolled = t => { for (let n = t; n && n !== layer; n = n.parentNode) if (n.scrollTop > 0) return true; return false; };
+  p.addEventListener('touchstart', e => {
+    s = null;
+    if (e.touches.length !== 1 || scrolled(e.target)) return;
+    const t = e.touches[0];
+    s = { x: t.clientX, y: t.clientY, on: false, dy: 0, vel: fingerVel() };
+  }, { passive: true });
+  p.addEventListener('touchmove', e => {
+    if (!s) return;
+    const t = e.touches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (!s.on) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (dy <= 0 || Math.abs(dx) > dy) { s = null; return; }   // 往上、横着：不是要收起卡片
+      s.on = true; s.y = t.clientY;
+      for (const a of p.getAnimations()) a.finish();   // 还在升起来就被按住：直接到位，从这里开始跟手
+    }
+    if (e.cancelable) e.preventDefault();
+    const y = t.clientY - s.y;
+    s.vel.add(t.clientY); s.dy = y > 0 ? y : y / 4;
+    p.style.transform = `translateY(${s.dy}px)`;
+  }, { passive: false });
+  const end = () => {
+    const d = s; s = null;
+    if (!d || !d.on) return;
+    if (pop && pop.el === p && (d.dy > p.offsetHeight / 3 || (d.vel.get() > .45 && d.dy > 24))) { p._dropY = d.dy; closePop(); return; }
+    p.style.transform = '';
+    if (motion) p.animate([{ transform: `translateY(${d.dy}px)` }, { transform: 'none' }], { duration: 360, easing: 'cubic-bezier(.25,1.3,.45,1)' });
+  };
+  p.addEventListener('touchend', end); p.addEventListener('touchcancel', end);
 }
 document.addEventListener('pointerdown', e => {
   downClosedPop = false; closedKind = null;
@@ -1635,9 +1691,9 @@ function gotoWeek(mon, slide = true) {
   if (slide && motion) {
     // 滑入期间先不吸附整列：不然列一平移，横向吸附就把滚动位置跟着“吸”过去，滑入效果被抵消
     document.body.classList.add('hfree');
-    let a;
+    let a; const dist = web ? 56 : 26;   // 手机上多滑一点：顺着手指翻过去的方向进来
     for (const n of [colsEl, $('#daysHead')])
-      a = n.animate([{ opacity: 0, transform: `translateX(${dir * 26}px)` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
+      a = n.animate([{ opacity: 0, transform: `translateX(${dir * dist}px)` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
     a.finished.catch(() => {}).then(() => { if (!asSlid) document.body.classList.remove('hfree'); });
   }
 }
@@ -1650,6 +1706,82 @@ function selectDay(ds) {
   if (!inWeek(ds)) { ui.sel = ds; gotoWeek(mondayOf(parse(ds))); return; }
   if (ui.sel === ds) return revealDay(ds);
   ui.sel = ds; renderHeader(); renderDays(); renderTodo(); revealDay(ds);
+}
+// 手机日视图：左右滑动换天。日期和下面的内容跟着手指走；松手时滑过四分之一屏、或者甩得够快，
+// 就翻到前一天 / 后一天：这一页接着滑走，新的一天从另一边进来；不够就弹回去。头部的左右箭头也是这样翻。
+let quietDay = false;   // 换天的动画由滑动来做，renderTodo 不再播上下翻页的那一套
+let swipeAnims = [], swipeEat = 0, swipePending = 0;   // swipePending：正滑走、还没换过去的那一页往哪翻
+// 日期只在自己的框里滑（框外裁掉，见 style.css），不会滑到左右箭头上
+const swipeParts = () => [...$('#todoDate').children, $('#progress'), $('#nownext'), $('.panes'), $('#sealDone')];
+const swipeFade = x => 1 - Math.min(.7, Math.abs(x) / ($('#todo').clientWidth || 1));
+// 「毕」的显隐由它自己的盖章动画管：只跟着平移，不碰透明度
+const swipeKey = (n, x) => n.id === 'sealDone' ? { translate: `${x}px 0` } : { translate: `${x}px 0`, opacity: swipeFade(x) };
+function swipePaint(x) {
+  for (const n of swipeParts()) { n.style.translate = `${x}px 0`; if (n.id !== 'sealDone') n.style.opacity = swipeFade(x); }
+}
+function swipeClear() { for (const n of swipeParts()) { n.style.translate = ''; n.style.opacity = ''; } }
+function swipeStop() { for (const a of swipeAnims) a.cancel(); swipeAnims = []; }
+function swipeFlush() {   // 上一页还在滑走就又要翻（连点箭头）：先把上一次的换天做完
+  const d = swipePending; if (!d) return;
+  swipePending = 0; quietDay = true;
+  try { selectDay(shift(ui.sel, d)); } finally { quietDay = false; }
+}
+function turnDay(dir, from = 0) {   // dir：1 后一天，-1 前一天；from：松手时内容已经被拖到哪了
+  swipeFlush(); swipeStop(); swipeClear();
+  if (!motion) return selectDay(shift(ui.sel, dir));
+  const ps = swipeParts(), W = $('#todo').clientWidth, out = -dir * W * .4;
+  swipeAnims = ps.map(n => n.animate([swipeKey(n, from), { ...swipeKey(n, out), ...(n.id === 'sealDone' ? {} : { opacity: 0 }) }],
+    { duration: from ? 150 : 120, easing: 'cubic-bezier(.4,0,1,1)', fill: 'forwards' }));
+  const first = swipeAnims[0];
+  swipePending = dir;
+  first.onfinish = () => {
+    if (swipeAnims[0] !== first) return;   // 半路又被手指按住了
+    swipeFlush();
+    swipeStop();
+    // 新的一天从另一边进来（重新取一遍元素：换天后日期是新的）
+    swipeAnims = swipeParts().map(n => n.animate([{ ...swipeKey(n, dir * W * .3), ...(n.id === 'sealDone' ? {} : { opacity: 0 }) }, swipeKey(n, 0)],
+      { duration: 320, easing: EASE }));
+  };
+}
+function swipeBack(from) {
+  swipeStop(); swipeClear();
+  if (motion) swipeAnims = swipeParts().map(n => n.animate([swipeKey(n, from), swipeKey(n, 0)], { duration: 340, easing: 'cubic-bezier(.25,1.2,.45,1)' }));
+}
+function initDaySwipe() {
+  const box = $('#todo');
+  let s = null;
+  box.addEventListener('touchstart', e => {
+    s = null;
+    if (!ui.mini || pop || downClosedPop || e.touches.length !== 1) return;
+    if (ui.tab === 'memo' && !ui.dayView) return;   // 随记不分天
+    if (e.target.closest('input, textarea, .mini-btns')) return;
+    const t = e.touches[0];
+    s = { x: t.clientX, y: t.clientY, on: false, dx: 0, vel: fingerVel() };
+  }, { passive: true });
+  box.addEventListener('touchmove', e => {
+    if (!s) return;
+    const t = e.touches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (!s.on) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dy) >= Math.abs(dx)) { s = null; return; }   // 竖着滑：在滚动列表
+      s.on = true; s.x = t.clientX;
+      if (swipeAnims.length) {   // 上一次翻页还没播完就又滑：把这一页“接住”，从它眼下的位置接着跟手
+        const x = parseFloat(getComputedStyle($('.panes')).translate) || 0;
+        swipePending = 0; swipeStop(); s.x -= x;
+      }
+    }
+    if (e.cancelable) e.preventDefault();
+    s.vel.add(t.clientX); s.dx = t.clientX - s.x; swipePaint(s.dx);
+  }, { passive: false });
+  const end = cancel => {
+    const d = s; s = null;
+    if (!d || !d.on) return;
+    swipeEat = performance.now() + 400;   // 滑完松手时别再当成一次点击
+    const v = d.vel.get(), W = box.clientWidth, far = Math.abs(d.dx) > W / 4, fling = Math.abs(v) > .4 && Math.abs(d.dx) > 30 && Math.sign(v) === Math.sign(d.dx);
+    if (!cancel && (far || fling)) turnDay(d.dx < 0 ? 1 : -1, d.dx); else swipeBack(d.dx);
+  };
+  box.addEventListener('touchend', () => end(false)); box.addEventListener('touchcancel', () => end(true));
+  box.addEventListener('click', e => { if (performance.now() < swipeEat) { e.stopPropagation(); e.preventDefault(); } }, true);
 }
 function goToday() { const td = today(); if (!inWeek(td)) { ui.sel = td; gotoWeek(thisMonday()); } else selectDay(td); scrollToNow(); pingNow(); }
 function scrollToNow() {
@@ -1700,13 +1832,31 @@ function toggleMini() {
   if (web) {   // 手机：日视图（卡片）⇄ 周视图，记住停在哪个
     const mini = !ui.mini;
     data.settings.pview = mini ? 'card' : 'week'; save();
-    document.body.classList.add('switching');
-    setTimeout(() => onMode({ mini, pinned: false }), 140);
+    if (!motion) return onMode({ mini, pinned: false });
+    // 像镜头推拉：去日视图时朝选中的那一天推近；回周视图时拉远，落回那一列
+    const f = $('#frame'), near = 1.06, far = .95;
+    for (const a of f.getAnimations()) a.cancel();
+    f.style.transformOrigin = mini ? dayOrigin() : '50% 40%';
+    f.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `scale(${mini ? near : far})` }],
+      { duration: 130, easing: 'cubic-bezier(.4,0,1,1)', fill: 'forwards' }).onfinish = () => {
+      onMode({ mini, pinned: false });
+      requestAnimationFrame(() => {   // onMode 在这一帧才排好周网格：这时才知道那一列在哪
+        for (const a of f.getAnimations()) a.cancel();
+        f.style.transformOrigin = mini ? '50% 40%' : dayOrigin();
+        f.animate([{ opacity: 0, transform: `scale(${mini ? far : near})` }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
+      });
+    };
     return;
   }
   if (!native) return onMode({ mini: !ui.mini, pinned: ui.pinned });
   document.body.classList.add('switching');
   setTimeout(() => send('setMode', { mini: !ui.mini }), 160);
+}
+function dayOrigin() {   // 选中的那天在周视图里的位置（相对整张纸），周视图没显示时取中间
+  const h = headEls[diffDays(ymd(ui.week), ui.sel)], r = h && h.getBoundingClientRect();
+  if (!r || !r.width) return '50% 40%';
+  const s = scroller.getBoundingClientRect(), f = $('#frame').getBoundingClientRect();
+  return `${clamp(r.left + r.width / 2 - f.left, 0, f.width)}px ${s.top + s.height / 3 - f.top}px`;
 }
 function onMode(st) {
   ui.mini = !!st.mini; ui.pinned = !!st.pinned;
@@ -1808,8 +1958,8 @@ function init() {
   $('#miniBtn').onclick = $('#expandBtn').onclick = toggleMini;
   $('#minBtn').onclick = () => send('minimize');
   $('#closeBtn').onclick = $('#closeBtn2').onclick = () => send('hide');
-  $('#prevDay').onclick = () => selectDay(shift(ui.sel, -1));
-  $('#nextDay').onclick = () => selectDay(shift(ui.sel, 1));
+  $('#prevDay').onclick = () => web && ui.mini ? turnDay(-1) : selectDay(shift(ui.sel, -1));
+  $('#nextDay').onclick = () => web && ui.mini ? turnDay(1) : selectDay(shift(ui.sel, 1));
   $('#daysHead').addEventListener('click', e => {
     const h = e.target.closest('.dh'); if (!h || !h.dataset.date) return;
     selectDay(h.dataset.date);
@@ -1846,11 +1996,29 @@ function init() {
   }, { passive: false });
   scroller.addEventListener('scroll', () => { $('#daysHead').scrollLeft = scroller.scrollLeft; if (!drag) lastScrollT = performance.now(); }, { passive: true });
   if (web) {
-    // 两指捏合（iOS 的 gesture 事件）：张开看得少而大，捏拢看得多；顺便挡住整页被放大
-    let g0 = 0;
-    $('#week').addEventListener('gesturestart', e => { e.preventDefault(); g0 = ui.days; if (drag) { clearTimeout(drag.hold); if (drag.armed) dragCancel(); else drag = null; } }, { passive: false });
-    $('#week').addEventListener('gesturechange', e => { e.preventDefault(); const n = clamp(Math.round(g0 / e.scale), 1, 7); if (n !== ui.days) setDays(n, e.clientX); }, { passive: false });
-    $('#week').addEventListener('gestureend', e => e.preventDefault(), { passive: false });
+    // 两指捏合（iOS 的 gesture 事件）：张开看得少而大，捏拢看得多；顺便挡住整页被放大。
+    // 列宽跟着手指连续变，捏住的那天一直在两指之间；松手后对齐到整数天（1–7），到头了再捏只动一点点，像拉橡皮筋
+    let pg = null;
+    $('#week').addEventListener('gesturestart', e => {
+      e.preventDefault();
+      if (drag) { clearTimeout(drag.hold); if (drag.armed) dragCancel(); else drag = null; }
+      if (!colw) return;
+      cancelAnimationFrame(colAnim); colAnim = 0; document.body.classList.add('hfree');
+      const W = scroller.clientWidth - gutW(), r = scroller.getBoundingClientRect(), ax = clamp(e.clientX - r.left - gutW(), 0, W);
+      pg = { W, ax, d0: W / colw, d: W / colw, at: (scroller.scrollLeft + ax) / colw, n: ui.days };
+    }, { passive: false });
+    $('#week').addEventListener('gesturechange', e => {
+      e.preventDefault(); if (!pg) return;
+      const raw = pg.d0 / e.scale, d = raw < 1 ? 1 - (1 - raw) / 4 : raw > 7 ? 7 + (raw - 7) / 4 : raw, w = pg.W / d;
+      pg.d = d; setColW(w); scrollX(clamp(pg.at * w - pg.ax, 0, Math.max(0, 7 * w - pg.W)));
+      const n = clamp(Math.round(d), 1, 7);
+      if (n !== pg.n) { pg.n = n; zoomTip(n === 7 ? '一周 7 天' : `一屏 ${n} 天`); }
+    }, { passive: false });
+    $('#week').addEventListener('gestureend', e => {
+      e.preventDefault(); if (!pg) return;
+      const r = scroller.getBoundingClientRect(), n = clamp(Math.round(pg.d), 1, 7), x = r.left + gutW() + pg.ax;
+      pg = null; setDays(n, x);
+    }, { passive: false });
     // 已经滚到这周最左 / 最右，再往外划：翻到上一周 / 下一周
     let sw = null;
     scroller.addEventListener('touchstart', e => {
@@ -1865,6 +2033,9 @@ function init() {
       if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6 || performance.now() - s.t > 700) return;
       if (dx < 0 && s.atR) flipWeek(1); else if (dx > 0 && s.atL) flipWeek(-1);
     }, { passive: true });
+    initDaySwipe();
+    // iOS 要页面上有 touchstart 监听，按钮按下时的 :active（轻轻缩一下）才会显示出来
+    document.addEventListener('touchstart', () => {}, { passive: true });
     $('#expandBtn').title = '周视图'; $('#miniBtn').title = '回到日视图';
     // 点了提醒通知：打开到那天、闪一下那个日程
     navigator.serviceWorker?.addEventListener('message', e => { if (e.data && e.data.type === 'focus') App.focus(e.data.date, e.data.id); });
