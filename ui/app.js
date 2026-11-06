@@ -547,14 +547,17 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   }
   const [tEl, tmEl, list, badge] = b.children;
   const rep = ev.repeat && ev.repeat !== 'none';
-  const tHtml = ev.title ? esc(ev.title) : '<span class="ph">未命名</span>';
-  const tmHtml = `${hm(o.start)}–${hm(o.end)}${rep ? ' <i class="rep">↻</i>' : ''}`;
+  // 块里净空多高、多宽（块宽减去 5px 间隙和左右内边距；底边留出拉伸手柄）
+  const inW = view.colW / o.ncol - 20, inH = px - 7 - (view.grip ? 4 : 0);
+  // 时间：一行放不下“开始–结束”时只写开始时间（完整时段在悬停提示里），重复标记放得下才带上
+  const tmOpts = [`${hm(o.start)}–${hm(o.end)}`, hm(o.start)].flatMap(x => rep ? [x + ' ↻', x] : [x]);
+  const tmStr = tmOpts.find(x => textW(x, 11) * 1.04 <= inW) || tmOpts[tmOpts.length - 1];
+  const tHtml = ev.title ? esc(ev.title) : '<span class="ph">未命名</span>', tmHtml = tmStr.replace(' ↻', ' <i class="rep">↻</i>');
   if (b._t !== tHtml) { tEl.innerHTML = tHtml; b._t = tHtml; }
   if (b._tm !== tmHtml) { tmEl.innerHTML = tmHtml; b._tm = tmHtml; }
-
-  // 排版：块里净空多高、多宽（块宽减去 5px 间隙和左右内边距；底边留出拉伸手柄）
-  const inW = view.colW / o.ncol - 20, inH = px - 7 - (view.grip ? 4 : 0), tmStr = `${hm(o.start)}–${hm(o.end)}${rep ? ' ↻' : ''}`;
   const tmLines = clamp(lines(tmStr, 11, inW), 1, 2);
+
+  // 排版
   let tl = clamp(Math.floor((raw - 7 - LH_TM * tmLines) / LH_T), 1, 4), items = [], more = null, inl = false, noTm = false;
   if (ts.length && raw >= 38 && inW >= 60) {
     // 地方让给小任务：块够宽时标题和时间并成一行；不够宽时标题最多两行，挤不下再只留一行；
@@ -578,11 +581,15 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   st.setProperty('--lines', tl);
   const last = items[items.length - 1];
   reconcile(list, items, t => t.id, makeEvTask, (n, t) => fillEvTask(n, t, t === last ? more : null), instant || !motion);
-  // 列不出小任务时（块太矮 / 太窄），右下角还是显示完成了几项
-  const bt = ts.length && !items.length ? `${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}` : '';
+  // 列不出小任务时（块太矮 / 太窄），右下角还是显示完成了几项；窄块里会压住时间的话就不显示（悬停提示里有）
+  let bt = ts.length && !items.length ? `${dn === ts.length ? '✓ ' : ''}${dn}/${ts.length}` : '';
+  if (bt && raw >= 38) {
+    const bottom = 3 + Math.min(tl, lines(ev.title || '未命名', 12.5, inW)) * LH_T + tmLines * LH_TM;
+    if (bottom > px - 17 && textW(tmStr, 11) * 1.04 + 32 > inW) bt = '';
+  }
   badge.hidden = !bt; badge.classList.toggle('all', dn === ts.length);
   if (badge.textContent !== bt) badge.textContent = bt;
-  b.title = `${ev.title || '未命名'}  ${hm(o.start)}–${hm(o.end)}${rep ? '（重复）' : ''}${ev.note ? '\n' + ev.note : ''}`;
+  b.title = `${ev.title || '未命名'}  ${hm(o.start)}–${hm(o.end)}${rep ? '（重复）' : ''}${ts.length ? `\n小任务 ${dn}/${ts.length}` : ''}${ev.note ? '\n' + ev.note : ''}`;
 }
 function updateNow() {
   const idx = diffDays(ymd(ui.week), today()), nl = $('#nowLine');
