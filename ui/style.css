@@ -408,6 +408,17 @@ body.hfree .scroller { scroll-snap-type: none; }   /* 缩放动画和拖动途�
   padding: 3px 4px 3px 0; border-radius: 6px; position: relative;
 }
 @media (hover: hover) { .task:hover { background: var(--wash); } }
+/* 拖动排序：拿起的一行浮起来跟着指针走，其他几行平滑让开位置 */
+.tl.sorting > .task { transition: translate .2s var(--ease); }
+.tl.sorting > .task.dragging {
+  z-index: 3; scale: 1.02; cursor: grabbing; background: var(--paper-hi);
+  box-shadow: 0 0 0 1px var(--rule), 0 8px 20px rgba(var(--shadow-c), .16);
+  transition: scale .16s var(--ease), box-shadow .16s, background-color .16s;   /* 位置不过渡：紧跟指针 */
+}
+.tl.sorting > .task.settle { z-index: 3; transition: translate .2s var(--ease), scale .2s var(--ease), box-shadow .2s, background-color .2s; }
+.tl.sorting .t-btn { opacity: 0 !important; }
+body.tdragging, body.tdragging * { cursor: grabbing !important; }
+body.web .task { -webkit-touch-callout: none; }   /* 手机上按住一行是要拿起来排序，别弹系统菜单 */
 .chk { width: 24px; height: 24px; display: grid; place-items: center; color: var(--ink-2); margin-top: -1px; transition: transform .2s var(--spring); }
 .chk:active { transform: scale(.82); }
 .chk svg { width: 22px; height: 22px; overflow: visible; }

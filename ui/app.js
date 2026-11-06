@@ -1224,6 +1224,123 @@ function editText(tx) {
   tx.addEventListener('keydown', onKey); tx.addEventListener('blur', onBlur);
 }
 
+// ───────────────────────── 小任务拖动排序 ─────────────────────────
+// 按住一行小任务上下拖：拿起的这行浮起来跟着走，其他几行让开位置，松手就排到那里（只在同一组里）。
+// 鼠标按下移动几像素就开始；手指要按住约 0.4 秒拿起来（没按住就动是在滚动列表）。
+// 「之前没做完的」按日期排，不能拖。待办栏和日程浮层里的小任务列表都能拖。
+let tdrag = null, tdragEat = 0, tdAS = 0;
+const scrollBox = n => {   // 往上找第一个能上下滚动的容器（拖到它的上下边缘时自动滚）
+  for (; n && n !== document.body; n = n.parentElement) {
+    const o = getComputedStyle(n).overflowY;
+    if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+};
+document.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || tdrag || drag) return;
+  const li = e.target.closest('.tl > .task');
+  if (!li || li._leaving || e.target.closest('.chk, .t-btn, [contenteditable]')) return;
+  const G = li.closest('.grp')?._g;
+  if (!G || G.kind === 'carry' || li.parentNode.children.length < 2) return;
+  const touch = e.pointerType === 'touch';
+  tdrag = { li, list: li.parentNode, pid: e.pointerId, touch, x0: e.clientX, y0: e.clientY, y: e.clientY, on: false };
+  if (touch) tdrag.hold = setTimeout(() => { if (tdrag && tdrag.li === li) startTaskDrag(); }, HOLD_MS);
+});
+document.addEventListener('pointermove', e => {
+  const d = tdrag; if (!d || e.pointerId !== d.pid) return;
+  d.y = e.clientY;
+  if (!d.on) {
+    const far = Math.hypot(e.clientX - d.x0, e.clientY - d.y0);
+    if (d.touch) { if (far > 8) { clearTimeout(d.hold); tdrag = null; } return; }   // 手指没按住就动：是在滚动
+    if (far < 5) return;
+    startTaskDrag();
+  }
+  moveTaskDrag();
+  if (!tdAS) tdAS = requestAnimationFrame(taskAutoScroll);
+});
+document.addEventListener('pointerup', e => { if (tdrag && e.pointerId === tdrag.pid) endTaskDrag(true); });
+document.addEventListener('pointercancel', e => { if (tdrag && e.pointerId === tdrag.pid) endTaskDrag(false); });
+// 拿起之后拦下 touchmove，列表就不会跟着手指滚（iOS 上只有一开始就挂着的非被动监听才拦得住）
+for (const r of [$('#todo'), $('#layer')]) r.addEventListener('touchmove', e => { if (tdrag && tdrag.on && e.cancelable) e.preventDefault(); }, { passive: false });
+document.addEventListener('click', e => { if (performance.now() < tdragEat) { e.stopPropagation(); e.preventDefault(); } }, true);   // 拖完松手不算点击
+
+function startTaskDrag() {
+  const d = tdrag; if (!d || d.on) return;
+  const items = [...d.list.children].filter(n => n.classList.contains('task') && !n._leaving);
+  const lt = d.list.getBoundingClientRect().top, rs = items.map(n => n.getBoundingClientRect());
+  Object.assign(d, { on: true, items, from: items.indexOf(d.li), tops: rs.map(r => r.top - lt), hs: rs.map(r => r.height), sc: scrollBox(d.list) });
+  if (d.from < 0) { tdrag = null; return; }
+  d.to = d.from;
+  const gap = items.length > 1 ? Math.max(0, d.tops[1] - d.tops[0] - d.hs[0]) : 0;
+  d.slot = d.hs[d.from] + gap;                       // 别的行让位时挪多远
+  d.grab = d.y0 - lt - d.tops[d.from];               // 按下时指针在这一行的什么高度：之后这一行和指针的相对位置不变
+  d.list.classList.add('sorting'); d.li.classList.add('dragging'); document.body.classList.add('tdragging');
+  moveTaskDrag();
+}
+function moveTaskDrag() {
+  const d = tdrag; if (!d || !d.on) return;
+  const { items, tops, hs, from } = d, last = items.length - 1;
+  const top = clamp(d.y - d.list.getBoundingClientRect().top - d.grab, tops[0] - 4, tops[last] + hs[last] - hs[from] + 4);   // 只在这一组里上下
+  d.li.style.translate = `0 ${top - tops[from]}px`;
+  // 往上拖：上边越过了上面几行的中线；往下拖：下边越过了下面几行的中线（行高不一样也好拖）
+  const bot = top + hs[from];
+  let to = from;
+  for (let k = from - 1; k >= 0 && top < tops[k] + hs[k] / 2; k--) to--;
+  for (let k = from + 1; k <= last && bot > tops[k] + hs[k] / 2; k++) to++;
+  if (to === d.to) return;
+  d.to = to;
+  items.forEach((n, k) => {
+    if (k === from) return;
+    const s = from < k && k <= to ? -d.slot : to <= k && k < from ? d.slot : 0;
+    n.style.translate = s ? `0 ${s}px` : '';
+  });
+}
+function taskAutoScroll() {   // 拖到列表可见区域的上下边缘：慢慢滚过去
+  tdAS = 0;
+  const d = tdrag; if (!d || !d.on || !d.sc) return;
+  const r = d.sc.getBoundingClientRect(), z = 30;
+  const v = d.y < r.top + z ? -Math.ceil((r.top + z - d.y) / 3) : d.y > r.bottom - z ? Math.ceil((d.y - r.bottom + z) / 3) : 0;
+  if (!v) return;
+  const before = d.sc.scrollTop; d.sc.scrollTop += v;
+  if (d.sc.scrollTop === before) return;   // 已经滚到头
+  moveTaskDrag(); tdAS = requestAnimationFrame(taskAutoScroll);
+}
+function endTaskDrag(ok) {
+  const d = tdrag; if (!d) return;
+  tdrag = null; clearTimeout(d.hold); cancelAnimationFrame(tdAS); tdAS = 0;
+  if (!d.on) return;
+  tdragEat = performance.now() + 400;
+  const { li, list, items, from, tops, hs } = d, to = ok ? d.to : from;
+  if (to === from) for (const n of items) if (n !== li) n.style.translate = '';
+  // 落下：滑进空出来的那一格，同时放下（缩回、阴影淡去），然后才真正改顺序
+  li.classList.replace('dragging', 'settle');
+  li.style.translate = `0 ${(to > from ? tops[to] + hs[to] - hs[from] : tops[to]) - tops[from]}px`;
+  const done = () => {
+    for (const n of items) { n.style.transition = 'none'; n.style.translate = ''; }
+    li.classList.remove('settle'); list.classList.remove('sorting'); document.body.classList.remove('tdragging');
+    if (to !== from) {
+      const ids = items.map(n => n.dataset.id);
+      ids.splice(to, 0, ids.splice(from, 1)[0]);
+      reorderTasks(ids, li.dataset.id);   // 重新渲染：DOM 顺序换好，和清掉的位移在同一帧，看不出跳动
+    }
+    void list.offsetHeight;
+    requestAnimationFrame(() => { for (const n of items) n.style.transition = ''; });
+  };
+  if (motion) setTimeout(done, 200); else done();
+}
+function reorderTasks(ids, movedId) {   // ids：这一组小任务的新顺序
+  commit(() => {
+    const ts = ids.map(id => data.tasks.find(t => t.id === id)).filter(Boolean), i = ts.findIndex(t => t.id === movedId);
+    if (i < 0) return;
+    // 尽量只改被拖的这一项（同步时冲突最少）：取前后两项的中间值；前后两项一样大（老数据都是 0）时整组按新顺序重新编号
+    const o = t => t.order || 0, a = ts[i - 1], b = ts[i + 1];
+    if (!a) ts[i].order = o(b) - 1;
+    else if (!b) ts[i].order = o(a) + 1;
+    else if (o(a) < o(b)) ts[i].order = (o(a) + o(b)) / 2;
+    else { const base = Math.min(...ts.map(o)); ts.forEach((t, k) => { t.order = base + k; }); }
+  });
+}
+
 // ───────────────────────── 浮层 ─────────────────────────
 let pop = null;
 const layer = $('#layer');
@@ -1289,6 +1406,7 @@ function sheetDrag(p) {
   }, { passive: true });
   p.addEventListener('touchmove', e => {
     if (!s) return;
+    if (tdrag && tdrag.on) { s = null; return; }   // 正拿着卡片里的一行小任务在排序
     const t = e.touches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
     if (!s.on) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
@@ -1760,6 +1878,7 @@ function initDaySwipe() {
   }, { passive: true });
   box.addEventListener('touchmove', e => {
     if (!s) return;
+    if (tdrag && tdrag.on) { s = null; return; }   // 正拿着一行小任务在排序
     const t = e.touches[0], dx = t.clientX - s.x, dy = t.clientY - s.y;
     if (!s.on) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
