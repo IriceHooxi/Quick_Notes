@@ -96,9 +96,18 @@ const HILLS = '<svg viewBox="0 0 64 44"><path d="M7 33c5-1 9-5 13-10 3-4 6-9 10-
 
 // ───────────────────────── 数据 ─────────────────────────
 const COLORS = [['dai', '黛'], ['zhu', '朱'], ['tai', '苔'], ['zhe', '赭'], ['zi', '紫'], ['qing', '青'], ['mo', '墨']];
+const BASE_HEX = { dai: '#3f5f86', zhu: '#c2513a', tai: '#6b8a4f', zhe: '#bb8634', zi: '#896191', qing: '#358680', mo: '#5a554c' };   // 与 style.css 里浅色纸的 --c-* 一致
+// 调色盘里的更多颜色（传统色名）。这些和自己调的颜色都存成 #rrggbb；夜墨纸色下由 CSS 统一调亮（--c-keep）
+const MORE = [['#b5475f', '胭脂'], ['#d07a8a', '桃红'], ['#cf7638', '橘'], ['#c4a23a', '缃'], ['#8b6b4b', '茶'], ['#4f8a4f', '竹'],
+  ['#2f8a6a', '碧'], ['#4a8fbf', '天青'], ['#46549e', '靛'], ['#7d6db8', '藤'], ['#a77fb8', '丁香'], ['#5d6f80', '鸦青']];
+const HEXC = /^#[0-9a-f]{6}$/;
+// 日程颜色 → CSS 颜色：七种基本色用主题里的变量；其他存的是 #rrggbb；认不出的（比如数据被改坏）当黛色
+const cvar = c => BASE_HEX[c] ? `var(--c-${c})` : HEXC.test(c) ? `color-mix(in oklab, ${c} var(--c-keep), #fff)` : 'var(--c-dai)';
+const colorName = c => (COLORS.find(x => x[0] === c) || MORE.find(x => x[0] === c) || [0, c])[1];
 const REPEATS = [['none', '不重复'], ['daily', '每天'], ['workdays', '工作日'], ['weekly', '每周']];
 const THEMES = [['xuan', '宣纸', '#f5efe3'], ['kraft', '牛皮', '#e6d4b4'], ['moon', '月白', '#f1f2ee'], ['ink', '夜墨', '#2a2723']];
-const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system', miniView: 'list', days: 7 };   // miniView：迷你卡片看待办列表还是日程方块；days：周视图一屏显示几天
+const DEF = { remind: 10, dayStart: 7, dayEnd: 23, theme: 'xuan', tz: 'system', miniView: 'list', days: 7, evClear: 0 };   // miniView：迷你卡片看待办列表还是日程方块；days：周视图一屏显示几天；evClear：日程方块的透明度（%）
+const CLEAR_MAX = 80;   // 方块最透也留两成底色，不然和空白分不清
 const BOOT = window.__BOOT__ || {};
 const tzOK = BOOT.zones !== false;   // 原生层（Python）能不能按时区提醒；不能就只跟随系统
 
@@ -119,6 +128,7 @@ function normalize(d) {
   settings.days = clamp(Math.round(+settings.days) || 7, 1, 7);
   settings.pdays = clamp(Math.round(+settings.pdays) || 3, 1, 7);   // 手机上的周视图一屏几天（手机屏幕窄，默认 3 天）
   if (settings.pview !== 'week') settings.pview = 'card';            // 手机上次停在哪个视图：日（卡片）/ 周
+  settings.evClear = clamp(Math.round((+settings.evClear || 0) / 5) * 5, 0, CLEAR_MAX);
   const gone = {};   // 删除记录（同步用）：id → 删除时间
   if (d.gone && typeof d.gone === 'object') for (const [k, v] of Object.entries(d.gone)) if (v > 0) gone[k] = +v;
   return { version: 1, settings, events, tasks, memo: typeof d.memo === 'string' ? d.memo : '', memoMt: d.memoMt > 0 ? +d.memoMt : 0, gone, colorIdx: d.colorIdx | 0 };
@@ -765,7 +775,7 @@ function fillBlock(b, o, dayTasks, td, nm, view = { hh: ui.hourH, colW: ui.colW,
   const st = b.style;
   st.setProperty('--s', o.start - view.off); st.setProperty('--e', o.end - view.off);
   st.setProperty('--l', o.col / o.ncol); st.setProperty('--w', 1 / o.ncol);
-  st.setProperty('--c', `var(--c-${ev.color || 'dai'})`);
+  st.setProperty('--c', cvar(ev.color));
   b.classList.toggle('past', o.date < td || (o.date === td && o.end <= nm));
   b.classList.toggle('live', o.date === td && o.start <= nm && nm < o.end);
   b.classList.toggle('short', raw < 38);
@@ -1108,7 +1118,7 @@ function fillGroup(n, g, instant) {
     let html;
     if (g.kind === 'ev') {
       const o = g.occ, ev = o.ev, td = today(), nm = nowMin(), dn = g.tasks.filter(t => t.done).length;
-      n.style.setProperty('--c', `var(--c-${ev.color || 'dai'})`);
+      n.style.setProperty('--c', cvar(ev.color));
       n.classList.toggle('past', o.date < td || (o.date === td && o.end <= nm));
       const live = o.date === td && o.start <= nm && nm < o.end;
       html = `<i class="dot"></i><span class="tm">${hm(o.start)}–${hm(o.end)}</span><span class="ttl">${ev.title ? esc(ev.title) : '未命名'}</span>${live ? '<span class="live">进行中</span>' : ''}${g.tasks.length ? `<span class="cnt">${dn}/${g.tasks.length}</span>` : ''}`;
@@ -1400,7 +1410,7 @@ function sheetDrag(p) {
   const scrolled = t => { for (let n = t; n && n !== layer; n = n.parentNode) if (n.scrollTop > 0) return true; return false; };
   p.addEventListener('touchstart', e => {
     s = null;
-    if (e.touches.length !== 1 || scrolled(e.target)) return;
+    if (e.touches.length !== 1 || scrolled(e.target) || e.target.closest('.nodrag, input[type=range]')) return;   // 调色盘、滑条：手指是在调东西
     const t = e.touches[0];
     s = { x: t.clientX, y: t.clientY, on: false, dy: 0, vel: fingerVel() };
   }, { passive: true });
@@ -1436,17 +1446,53 @@ document.addEventListener('pointerdown', e => {
   downClosedPop = true; closedKind = pop.kind; closePop();
 }, true);
 
+// 调色盘的颜色换算：在 OKLCH 里调（亮度、彩度、色相各管各的，拖起来深浅均匀），存成 sRGB 的 #rrggbb
+const toLin = v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4;
+const toGam = v => v <= .0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - .055;
+function lchLin(L, C, h) {   // OKLCH → 线性 sRGB（可能超出 0..1）
+  const a = C * Math.cos(h * Math.PI / 180), b = C * Math.sin(h * Math.PI / 180);
+  const l = (L + .3963377774 * a + .2158037573 * b) ** 3, m = (L - .1055613458 * a - .0638541728 * b) ** 3, s = (L - .0894841775 * a - 1.291485548 * b) ** 3;
+  return [4.0767416621 * l - 3.3077115913 * m + .2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s, -.0041960863 * l - .7034186147 * m + 1.707614701 * s];
+}
+const inGamut = c => c.every(v => v >= -1e-4 && v <= 1.0001);
+function lchRGB(L, C, h) {   // → [r, g, b] 0..255；屏幕显示不了这么艳时，降低彩度直到能显示
+  let rgb = lchLin(L, C, h);
+  if (!inGamut(rgb)) {
+    let lo = 0, hi = C;
+    for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (inGamut(lchLin(L, mid, h))) lo = mid; else hi = mid; }
+    rgb = lchLin(L, lo, h);
+  }
+  return rgb.map(v => Math.round(toGam(clamp(v, 0, 1)) * 255));
+}
+const rgbHex = rgb => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+function hexLch(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => toLin(parseInt(hex.slice(i, i + 2), 16) / 255));
+  const l = Math.cbrt(.4122214708 * r + .5363325363 * g + .0514459929 * b), m = Math.cbrt(.2119034982 * r + .6806995451 * g + .1073969566 * b), s = Math.cbrt(.0883024619 * r + .2817188376 * g + .6299787005 * b);
+  const L = .2104542553 * l + .793617785 * m - .0040720468 * s, A = 1.9779984951 * l - 2.428592205 * m + .4505937099 * s, B = .0259040371 * l + .7827717662 * m - .808675766 * s;
+  return [L, Math.hypot(A, B), (Math.atan2(B, A) * 180 / Math.PI + 360) % 360];
+}
+// 自己调的范围：上浅下深、左灰右艳。太浅的颜色在纸上看不清，太深的在夜墨上看不清，所以两头都收一点
+const PAD = { L1: .78, L0: .36, C: .16 };
+// 夜墨纸色下，自定义颜色由 CSS 掺 28% 白（--c-keep: 72%，在 OKLab 里混）；调色盘自己画的颜色也照这样调亮，和方块上看到的一致
+const shownLch = (L, C) => document.documentElement.dataset.theme === 'ink' ? [.72 * L + .28, .72 * C] : [L, C];
+
 // 日程编辑浮层
 function evPopHTML(ev, date) {
   const d = parse(date), rep = ev.repeat || 'none';
   return `<div class="pop pop-ev" role="dialog">
     <div class="pop-top">
-      <div class="swatches">${COLORS.map(([c, n]) => `<button class="sw${ev.color === c ? ' on' : ''}" data-c="${c}" style="--c:var(--c-${c})" title="${n}"></button>`).join('')}</div>
+      <div class="swatches">${COLORS.map(([c, n]) => `<button class="sw" data-c="${c}" style="--c:var(--c-${c})" title="${n}"></button>`).join('')}<button class="sw pal-btn"></button></div>
       <div class="pop-acts">
         <button class="ib bell${ev.remind !== false ? ' on' : ''}" title="开始前提醒">${I.bell}</button>
         <button class="ib del" title="删除日程">${I.trash}</button>
         <button class="ib x" title="关闭 (Esc)">${I.close}</button>
       </div>
+    </div>
+    <div class="pal" hidden>
+      <div class="pal-sw">${MORE.map(([c, n]) => `<button class="sw" data-c="${c}" style="--c:${cvar(c)}" title="${n}"></button>`).join('')}</div>
+      <div class="pal-sw pal-used" hidden></div>
+      <div class="pal-pad nodrag" title="左右：灰 ↔ 艳　上下：浅 ↔ 深"><canvas width="96" height="32"></canvas><i class="pal-dot"></i></div>
+      <div class="pal-hue nodrag" title="色相"><i class="pal-knob"></i></div>
     </div>
     <input class="pop-title" value="${esc(ev.title)}" placeholder="这段时间要做什么？" maxlength="80" spellcheck="false">
     <div class="pop-when">
@@ -1504,17 +1550,117 @@ function refreshPop(instant = false) {
   p.querySelector('.pop-date').textContent = `周${WD[d.getDay()]} · ${d.getMonth() + 1}月${d.getDate()}日`;
   for (const inp of $$('.tm-in', p)) if (inp !== document.activeElement) inp.value = hm(inp.dataset.f === 'start' ? ev.start : ev.end);
   p.querySelector('.pop-dur').textContent = dur(ev.end - ev.start);
+  pop.paintColor?.();   // 颜色可能在别的设备上改了（同步过来）
 }
 function autoGrow(t) { t.style.height = 'auto'; t.style.height = Math.min(120, t.scrollHeight + 2) + 'px'; }
+// 日程的颜色：上面一排七种基本色和调色盘按钮；调色盘里有更多颜色、用过的颜色，还能自己调
+function bindPalette(p, st) {
+  const pal = $('.pal', p), btn = $('.pal-btn', p), used = $('.pal-used', p);
+  const pad = $('.pal-pad', p), cv = $('canvas', pad), dot = $('.pal-dot', pad), hue = $('.pal-hue', p), knob = $('.pal-knob', hue);
+  const color = () => findEv(st.evId)?.color;
+  const paint = () => {   // 标出选中的色块；不是基本色时，调色盘按钮中间换成当前颜色、外面套一圈
+    const c = color(), own = !BASE_HEX[c];
+    btn.classList.toggle('on', own);
+    if (own) btn.style.setProperty('--c', cvar(c)); else btn.style.removeProperty('--c');
+    btn.title = own ? `调色盘（现在是 ${colorName(c)}）` : '调色盘：更多颜色';
+    for (const s of $$('.sw[data-c]', p)) s.classList.toggle('on', s.dataset.c === c);
+  };
+  st.paintColor = paint;
+
+  // 自己调：pc 是十字所在的 OKLCH；拖动时日程块每帧最多改一次色
+  let pc = { L: .55, C: .1, h: 250 }, drawnH = null, raf = 0;
+  const drawPad = () => {
+    if (drawnH === pc.h) return;
+    drawnH = pc.h;
+    const W = cv.width, H = cv.height, ctx = cv.getContext('2d'), img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const [L, C] = shownLch(PAD.L1 - y / (H - 1) * (PAD.L1 - PAD.L0), x / (W - 1) * PAD.C), rgb = lchRGB(L, C, pc.h), i = (y * W + x) * 4;
+      img.data[i] = rgb[0]; img.data[i + 1] = rgb[1]; img.data[i + 2] = rgb[2]; img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+  const mark = () => {
+    dot.style.left = pc.C / PAD.C * 100 + '%';
+    dot.style.top = (PAD.L1 - pc.L) / (PAD.L1 - PAD.L0) * 100 + '%';
+    dot.style.background = cvar(rgbHex(lchRGB(pc.L, pc.C, pc.h)));
+    knob.style.left = pc.h / 360 * 100 + '%';
+  };
+  const aim = c => {   // 十字对准某个颜色：点了色块之后，可以从它接着微调
+    const [L, C, h] = hexLch(BASE_HEX[c] || (HEXC.test(c) ? c : BASE_HEX.dai));
+    pc = { L: clamp(L, PAD.L0, PAD.L1), C: Math.min(C, PAD.C), h: C < .02 ? pc.h : h };   // 灰色没有色相：色相条留在原处
+    drawPad(); mark();
+  };
+  const live = () => {
+    mark();
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      if (pop !== st) return;
+      drawPad();
+      const c = rgbHex(lchRGB(pc.L, pc.C, pc.h));
+      if (color() !== c) { editEv(ev => { ev.color = c; }); paint(); }
+    });
+  };
+  const track = (el, fn) => el.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    const go = m => { const r = el.getBoundingClientRect(); fn(clamp((m.clientX - r.left) / r.width, 0, 1), clamp((m.clientY - r.top) / r.height, 0, 1)); live(); };
+    const end = () => { el.removeEventListener('pointermove', go); el.removeEventListener('pointerup', end); el.removeEventListener('pointercancel', end); };
+    el.addEventListener('pointermove', go); el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    go(e);
+  });
+  track(pad, (x, y) => { pc.C = x * PAD.C; pc.L = PAD.L1 - y * (PAD.L1 - PAD.L0); });
+  track(hue, x => { pc.h = x * 360; });
+  hue.style.background = `linear-gradient(90deg, ${Array.from({ length: 13 }, (_, i) => rgbHex(lchRGB(...shownLch(.68, .13), i * 30))).join(', ')})`;
+
+  const fillUsed = () => {   // 用过的自定义颜色：从所有日程里数，用得多的在前
+    const n = new Map();
+    for (const e of data.events) if (HEXC.test(e.color) && !MORE.some(m => m[0] === e.color)) n.set(e.color, (n.get(e.color) || 0) + 1);
+    const cs = [...n].sort((a, b) => b[1] - a[1]).slice(0, 10).map(x => x[0]);
+    used.innerHTML = cs.map(c => `<button class="sw" data-c="${c}" style="--c:${cvar(c)}" title="用过的颜色"></button>`).join('');
+    used.hidden = !cs.length;
+  };
+  const settle = y0 => {   // 电脑上卡片变高 / 变矮后重新摆，免得出屏；位置变了就滑过去
+    if (web || pop !== st) return;
+    placePop(p, st.rect, st.prefer);
+    const dy = y0 - p.getBoundingClientRect().top;
+    if (dy && motion) p.animate([{ translate: `0 ${dy}px` }, { translate: '0 0' }], { duration: 260, easing: EASE });
+  };
+  let open = false, anim = null;
+  const toggle = on => {
+    if (on === open) return;
+    open = on; btn.classList.toggle('open', on);
+    if (anim) { anim.cancel(); anim = null; }
+    const y0 = p.getBoundingClientRect().top;
+    if (on) { fillUsed(); paint(); pal.hidden = false; aim(color()); settle(y0); }
+    if (!motion) { if (!on) { pal.hidden = true; settle(y0); } return; }
+    const h = pal.offsetHeight + 'px';
+    pal.style.overflow = 'hidden';   // 只在展开 / 收起时裁边：平时十字和色相把手要能伸出边缘
+    anim = pal.animate(on ? [{ height: '0px', opacity: 0 }, { height: h, opacity: 1 }] : [{ height: h, opacity: 1 }, { height: '0px', opacity: 0 }],
+      { duration: on ? 260 : 200, easing: EASE, fill: 'forwards' });
+    anim.onfinish = () => {
+      anim.cancel(); anim = null; pal.style.overflow = '';
+      if (!on) { pal.hidden = true; settle(p.getBoundingClientRect().top); }
+    };
+  };
+  $('.swatches', p).addEventListener('click', e => {
+    const b = e.target.closest('.sw'); if (!b) return;
+    if (b === btn) toggle(!open); else pick(b.dataset.c);
+  });
+  pal.addEventListener('click', e => { const b = e.target.closest('.sw[data-c]'); if (b) pick(b.dataset.c); });
+  const pick = c => {
+    const ev = findEv(st.evId); if (!c || !ev || ev.color === c) return;
+    const from = cvar(ev.color), id = blocks.get(st.key)?.dataset.id;
+    editEv(ev => { ev.color = c; });
+    paint(); if (open) aim(c);
+    if (id) for (const blk of blocks.values()) if (blk.dataset.id === id) wash(blk, from);   // 重复日程：这一周里的每一块一起换
+  };
+  paint();
+}
 function bindEvPop(p) {
   const st = pop;
-  p.querySelector('.swatches').addEventListener('click', e => {
-    const b = e.target.closest('.sw'); if (!b || b.classList.contains('on')) return;
-    const from = `var(--c-${p.querySelector('.sw.on')?.dataset.c || 'dai'})`, id = blocks.get(st.key)?.dataset.id;
-    editEv(ev => { ev.color = b.dataset.c; });
-    for (const s of $$('.sw', p)) s.classList.toggle('on', s === b);
-    if (id) for (const blk of blocks.values()) if (blk.dataset.id === id) wash(blk, from);   // 重复日程：这一周里的每一块一起换
-  });
+  bindPalette(p, st);
   const title = p.querySelector('.pop-title');
   title.addEventListener('input', () => editEv(ev => { ev.title = title.value; }));
   title.addEventListener('keydown', e => { if (e.key === 'Enter' && !composing(e)) { e.preventDefault(); closePop(); } });
@@ -1674,6 +1820,7 @@ function openSettings(page, anchor = $('#settingsBtn')) {
     <div class="set-main">
     <h4>设置</h4>
     <div class="set-row th-row"><span class="lab">纸色</span><div class="themes">${THEMES.map(([k, n, c]) => `<button class="th${s.theme === k ? ' on' : ''}" data-th="${k}" style="background:${c}"><span>${n}</span></button>`).join('')}</div></div>
+    <div class="set-row"><span class="lab">方块透明度</span><div class="rng"><span class="ev-pv" title="日程方块的样子"><i></i></span><input type="range" class="ev-clear nodrag" min="0" max="${CLEAR_MAX}" step="5" value="${s.evClear}"><b class="ecv"></b></div></div>
     <div class="set-row"><span class="lab">提前提醒</span><div class="seg rem-seg">${[0, 5, 10, 15, 30].map(v => `<button data-rem="${v}" class="${s.remind === v ? 'on' : ''}">${v ? v + ' 分' : '关'}</button>`).join('')}</div></div>
     ${web ? '<div class="set-row push-row"><span class="push-st"></span><button class="link push-go" hidden></button></div>' : ''}
     ${web ? `<div class="set-row"><span class="lab">周视图一屏</span><div class="stepper"><button data-pd="-1">−</button><b class="pdv">${s.pdays} 天</b><button data-pd="1">+</button></div></div>` : ''}
@@ -1695,6 +1842,10 @@ function openSettings(page, anchor = $('#settingsBtn')) {
   const main = $('.set-main', p), tzp = $('.set-tz', p), q = $('.tz-q', p), list = $('.tz-list', p);
   $('.sync-st', p).textContent = syncText();
   if (web) setTimeout(paintPush);   // 浮层挂上页面后再填
+  const rng = $('.ev-clear', p);
+  const showClear = () => { $('.ecv', p).textContent = s.evClear + '%'; rng.style.setProperty('--p', s.evClear / CLEAR_MAX * 100 + '%'); };
+  rng.addEventListener('input', () => { s.evClear = +rng.value; applyTheme(); showClear(); save(); });   // 边拖边看：后面的日程方块跟着变
+  showClear();
   let hi = -1;   // 键盘 ↑↓ 选中的那一行
   const paintCur = () => {
     const b = $('.tz-cur', p);
@@ -1777,7 +1928,11 @@ function openSettings(page, anchor = $('#settingsBtn')) {
   openPop(p, anchor.getBoundingClientRect(), 'below', { kind: 'settings', tick: () => { paintCur(); if (!tzp.hidden) retime(); } });
   if (page === 'tz') showPage(true, false);
 }
-function applyTheme() { document.documentElement.dataset.theme = data.settings.theme || 'xuan'; }
+function applyTheme() {
+  const r = document.documentElement, k = 1 - (data.settings.evClear || 0) / 100;
+  r.dataset.theme = data.settings.theme || 'xuan';
+  r.style.setProperty('--ev-a', k * 100 + '%'); r.style.setProperty('--ev-k', k);   // 日程方块底色留几成
+}
 
 // 提示条
 function toast(msg, action, fn) {

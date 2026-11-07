@@ -30,6 +30,8 @@
   --c-zi:  #896191;  /* 紫 */
   --c-qing:#358680;  /* 青 */
   --c-mo:  #5a554c;  /* 墨 */
+  --c-keep: 100%;    /* 调色盘里的颜色（#rrggbb）保留几成原色；夜墨纸色掺白调亮 */
+  --ev-a: 100%; --ev-k: 1;   /* 日程方块底色留几成（设置里的「方块透明度」，由脚本改） */
 
   --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .40  0 0 0 0 .33  0 0 0 0 .22  0 0 0 .16 0'/></filter><rect width='100%25' height='100%25' filter='url(%23f)'/></svg>");
   --fiber: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.008 .045' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .36  0 0 0 0 .2  0 0 0 .09 0'/></filter><rect width='100%25' height='100%25' filter='url(%23f)'/></svg>");
@@ -61,6 +63,7 @@
   --accent: #e07a5f; --shadow-c: 0, 0, 0;
   --c-zhu: #d9775f; --c-dai: #7c9cc4; --c-tai: #93b273; --c-zhe: #d6a65a;
   --c-zi: #b48dbb; --c-qing: #63b0a8; --c-mo: #a49d90;
+  --c-keep: 72%;
   --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 .95  0 0 0 0 .85  0 0 0 .07 0'/></filter><rect width='100%25' height='100%25' filter='url(%23f)'/></svg>");
   --fiber: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='.008 .045' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 .9  0 0 0 0 .7  0 0 0 .05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23f)'/></svg>");
 }
@@ -257,10 +260,10 @@ body.hfree .scroller { scroll-snap-type: none; }   /* 缩放动画和拖动途�
               box-shadow .2s, transform .2s var(--ease), translate .25s var(--ease), opacity .3s;
   z-index: 1;
 }
-.ev, .fx-wash {   /* 底色单独写：换颜色时盖在上面慢慢退去的旧色层（.fx-wash）跟日程块用同一套 */
+.ev, .fx-wash, .ev-pv i {   /* 底色单独写：换颜色时盖在上面慢慢退去的旧色层（.fx-wash）、设置里的小样，跟日程块用同一套 */
   background:
-    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--c) var(--ev-hi, 12%), transparent), transparent 70%),
-    color-mix(in srgb, var(--c) var(--ev-mix, 20%), var(--paper));
+    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--c) calc(var(--ev-hi, 12%) * var(--ev-k)), transparent), transparent 70%),
+    color-mix(in srgb, color-mix(in srgb, var(--c) var(--ev-mix, 20%), var(--paper)) var(--ev-a), transparent);
 }
 @media (hover: hover) { .ev:hover { transform: translateY(-1px); box-shadow: inset 3px 0 0 var(--c), inset 0 0 0 .6px color-mix(in srgb, var(--c) 45%, transparent), 0 4px 12px rgba(var(--shadow-c), .14); z-index: 2; } }
 .ev.active { box-shadow: inset 3px 0 0 var(--c), 0 0 0 1.5px var(--c), 0 6px 16px rgba(var(--shadow-c), .16); z-index: 3; }
@@ -537,6 +540,23 @@ body.mini.dayview .tabs { display: none; }
 .sw::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid var(--c); opacity: 0; transform: scale(.6); transition: opacity .2s, transform .25s var(--spring); }
 @media (hover: hover) { .sw:hover { transform: scale(1.12); } }
 .sw.on::after { opacity: 1; transform: scale(1); }
+/* 调色盘按钮：一圈色环，中间纸色；选了调色盘里的颜色时，中间换成那个颜色、外面套一圈；展开时色环转半圈 */
+.sw.pal-btn { --c: var(--ink-3); margin-left: 2px; background: conic-gradient(#c2513a, #cf7638, #c4a23a, #6b8a4f, #358680, #4a8fbf, #46549e, #896191, #b5475f, #c2513a);
+  transition: transform .2s var(--spring), rotate .45s var(--spring); }
+.sw.pal-btn::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--paper-hi); transition: inset .2s var(--ease), background-color .2s; }
+.sw.pal-btn.on::before { inset: 4px; background: var(--c); }
+.sw.pal-btn.open { rotate: 180deg; }
+.pal { padding: 10px 0 4px; margin-top: 4px; border-top: 1px dashed var(--rule); }
+.pal-sw { display: flex; flex-wrap: wrap; gap: 7px 5px; }
+.pal-used { margin-top: 9px; align-items: center; }
+.pal-used::before { content: '用过'; font-size: 11px; color: var(--ink-3); margin-right: 3px; }
+.pal-pad { position: relative; height: 64px; margin: 12px 0 0; touch-action: none; cursor: crosshair; }
+.pal-pad canvas { display: block; width: 100%; height: 100%; border-radius: 8px; box-shadow: 0 0 0 1px var(--rule); }
+.pal-dot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid #fff; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .28), 0 1px 4px rgba(0, 0, 0, .3); }
+.pal-hue { position: relative; height: 12px; margin: 12px 0 2px; border-radius: 6px; touch-action: none; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+.pal-knob { position: absolute; top: -3px; width: 8px; height: 18px; margin-left: -4px; border-radius: 4px; background: #fbf7ee; pointer-events: none;   /* 夜墨下也用浅色，不然像色条断了一截 */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .22), 0 1px 3px rgba(0, 0, 0, .25); }
 .pop-acts { display: flex; gap: 0; margin-right: -6px; }
 .pop-acts .ib { width: 28px; height: 28px; }
 @media (hover: hover) { .pop-acts .ib.del:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); } }
@@ -605,6 +625,20 @@ body.mini.dayview .tabs { display: none; }
 .stepper button { width: 22px; height: 22px; border-radius: 6px; color: var(--ink-2); }
 @media (hover: hover) { .stepper button:hover { background: var(--hover); color: var(--ink); } }
 .stepper b { font-weight: normal; min-width: 42px; text-align: center; }
+/* 滑条：墨色的已拖过段 + 纸色圆钮；--p 是拖到了百分之几（脚本给） */
+.rng { display: flex; align-items: center; gap: 8px; }
+.rng b { font-weight: normal; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.rng input { -webkit-appearance: none; appearance: none; width: 96px; height: 20px; margin: 0; background: transparent; cursor: pointer; }
+.rng input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--ink-2) var(--p, 0%), var(--rule) var(--p, 0%)); }
+.rng input::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--paper-hi);
+  box-shadow: 0 0 0 1px var(--rule), 0 1px 3px rgba(var(--shadow-c), .3); transition: transform .2s var(--spring); }
+.rng input:active::-webkit-slider-thumb { transform: scale(1.15); }
+.rng input:focus-visible { outline: none; }
+.rng input:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px var(--ink-3), 0 1px 3px rgba(var(--shadow-c), .3); }
+/* 透明度小样：两道格线上压一个黛色方块，透到能看见格线 */
+.ev-pv { position: relative; width: 34px; height: 24px; flex: none; background: repeating-linear-gradient(to bottom, transparent 0 7px, var(--rule) 7px 8px); }
+.ev-pv i { --c: var(--c-dai); position: absolute; inset: 2px 3px; border-radius: 2px 5px 5px 2px;
+  box-shadow: inset 2px 0 0 var(--c), inset 0 0 0 .6px color-mix(in srgb, var(--c) 35%, transparent); }
 .switch { width: 36px; height: 20px; border-radius: 10px; background: var(--rule); position: relative; transition: background .25s; }
 .switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--paper-hi); box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .3s var(--spring); }
 .switch.on { background: var(--ink-2); }
@@ -751,6 +785,14 @@ body.web #cols, body.web #cols .ev { -webkit-touch-callout: none; -webkit-user-s
 body.web .cols, body.web .cols .ev { touch-action: pan-x pan-y; }
 body.web .ev-grip { height: 14px; }
 body.web .ev-grip::after { opacity: .3; }
+/* 调色盘和滑条：指尖用，放大一些 */
+body.web .pal-sw:not(.pal-used) { flex-wrap: nowrap; justify-content: space-between; gap: 0; }   /* 十二色排成一行，两头对齐 */
+body.web .pal-used { gap: 8px; }
+body.web .pal-sw .sw { flex: none; width: 22px; height: 22px; }
+body.web .pal-pad { height: 88px; }
+body.web .pal-hue { height: 18px; border-radius: 9px; }
+body.web .pal-knob { width: 10px; height: 24px; margin-left: -5px; }
+body.web .rng input { width: 128px; height: 28px; }
 
 /* 同步状态：云朵；同步好了里面打个勾，正在同步时轻轻呼吸，连不上时变成朱色 */
 .sync-ind svg .ck { opacity: 0; transition: opacity .3s; }
